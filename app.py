@@ -1,4 +1,4 @@
-```python
+
 import json
 import pandas as pd
 import numpy as np
@@ -460,4 +460,3 @@ secondaryBackgroundColor="#EDF0E4"
 textColor="#33513B"
 primaryColor="#4F7A52"
 font="sans serif"
-```
