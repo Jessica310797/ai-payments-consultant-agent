@@ -1,5 +1,3 @@
-Here's the complete, current version of `app.py` — the sage-green themed version with both tabs (Performance Analysis and Routing Advisor):
-
 ```python
 import json
 import pandas as pd
@@ -454,11 +452,7 @@ with tab2:
 
             st.write("")
             st.markdown(recommendation)
-```
-
-**To apply it:** select all the existing content in `app.py` (Ctrl+A / Cmd+A), delete it, paste this in, then scroll down and click **Commit changes**. You'll also need `.streamlit/config.toml` (paste-in below, create via **Add file** if it doesn't exist yet) for the green theme colors to apply correctly:
-
-```toml
+toml
 [theme]
 base="light"
 backgroundColor="#F7F5EF"
