@@ -5,7 +5,7 @@ import numpy as np
 import streamlit as st
 import plotly.express as px
 from anthropic import Anthropic
-from sentence_transformers import SentenceTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 st.set_page_config(page_title="Payments Consultant", layout="wide")
@@ -106,10 +106,6 @@ def get_client():
     return Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
 
 @st.cache_resource
-def get_embed_model():
-    return SentenceTransformer('all-MiniLM-L6-v2')
-
-@st.cache_resource
 def get_knowledge_base():
     documents = [
         {"id": "decline_codes", "title": "Card Decline Codes Reference",
@@ -145,15 +141,15 @@ def get_knowledge_base():
                   "debit/prepaid cap narrows this gap, though eftpos generally remains "
                   "cheaper, especially for lower-value transactions.")},
     ]
-    embed_model = get_embed_model()
-    embeddings = embed_model.encode([d["text"] for d in documents])
-    return documents, embeddings
+    # TF-IDF keyword search: instant to build and plenty for a small knowledge base,
+    # without the large PyTorch/sentence-transformers download at startup.
+    vectorizer = TfidfVectorizer(stop_words="english", ngram_range=(1, 2), sublinear_tf=True)
+    doc_matrix = vectorizer.fit_transform([f"{d['title']}. {d['text']}" for d in documents])
+    return documents, vectorizer, doc_matrix
 
 def retrieve_relevant_docs(query, top_k=2):
-    documents, doc_embeddings = get_knowledge_base()
-    embed_model = get_embed_model()
-    query_embedding = embed_model.encode([query])
-    similarities = cosine_similarity(query_embedding, doc_embeddings)[0]
+    documents, vectorizer, doc_matrix = get_knowledge_base()
+    similarities = cosine_similarity(vectorizer.transform([query]), doc_matrix)[0]
     top_indices = similarities.argsort()[::-1][:top_k]
     return [{"title": documents[i]["title"], "text": documents[i]["text"]} for i in top_indices]
 
@@ -233,6 +229,7 @@ TOOL_FUNCTIONS = {"calculate_revenue_impact": calculate_revenue_impact,
 
 # ---------- DATA HELPERS ----------
 
+@st.cache_data(show_spinner=False)
 def build_data_summary(df):
     overall_rate = (df["status"] == "approved").mean() * 100
     df = df.copy()
@@ -305,6 +302,7 @@ def run_agent(df, question, max_iterations=5):
         messages.append({"role": "user", "content": results})
     return "Reached iteration limit without a final answer.", tool_log
 
+@st.cache_data(show_spinner=False)
 def generate_demo_data(seed, healthy=False):
     np.random.seed(seed)
     dates = pd.date_range(start="2026-01-01", end="2026-06-30", freq="D")
