@@ -250,6 +250,33 @@ By payment method:\n{methods.to_string()}"""
     return {"summary_text": summary_text, "monthly": monthly, "declines": declines, "methods": methods,
             "avg_transaction_value": df["amount"].mean(), "monthly_txn_count": len(df) / df["month"].nunique()}
 
+def response_text(response):
+    """Join all text blocks; the first block is not guaranteed to be text."""
+    text = "\n\n".join(b.text for b in response.content if b.type == "text").strip()
+    return text or "The model returned no text. Please try again."
+
+REQUIRED_COLUMNS = ["date", "amount", "payment_method", "status", "decline_reason"]
+
+def load_uploaded_csv(uploaded):
+    """Read and validate an uploaded CSV. Returns (df, error_message)."""
+    try:
+        df = pd.read_csv(uploaded)
+    except Exception as e:
+        return None, f"Could not read the file as a CSV: {e}"
+    df.columns = [c.strip().lower() for c in df.columns]
+    missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
+    if missing:
+        return None, f"CSV is missing required column(s): {', '.join(missing)}."
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
+    df["status"] = df["status"].astype(str).str.strip().str.lower()
+    df = df.dropna(subset=["date", "amount"])
+    if df.empty:
+        return None, "No rows with a valid date and amount were found."
+    if not df["status"].isin(["approved", "declined"]).any():
+        return None, "The 'status' column must contain 'approved' or 'declined' values."
+    return df, None
+
 def run_agent(df, question, max_iterations=5):
     client = get_client()
     stats = build_data_summary(df)
@@ -263,14 +290,18 @@ def run_agent(df, question, max_iterations=5):
         response = client.messages.create(model="claude-sonnet-4-6", max_tokens=1500,
                                             tools=ALL_TOOLS, messages=messages)
         if response.stop_reason != "tool_use":
-            return response.content[0].text, tool_log
+            return response_text(response), tool_log
         messages.append({"role": "assistant", "content": response.content})
         results = []
         for block in response.content:
             if block.type == "tool_use":
                 tool_log.append(f"{block.name}({block.input})")
-                result = TOOL_FUNCTIONS[block.name](**block.input)
-                results.append({"type": "tool_result", "tool_use_id": block.id, "content": json.dumps(result)})
+                try:
+                    result = TOOL_FUNCTIONS[block.name](**block.input)
+                    results.append({"type": "tool_result", "tool_use_id": block.id, "content": json.dumps(result)})
+                except Exception as e:
+                    results.append({"type": "tool_result", "tool_use_id": block.id,
+                                    "content": f"Tool error: {e}", "is_error": True})
         messages.append({"role": "user", "content": results})
     return "Reached iteration limit without a final answer.", tool_log
 
@@ -345,7 +376,7 @@ Write a short recommendation (under 300 words) covering:
 4. One clear, specific next action
 """
     response = client.messages.create(model="claude-sonnet-4-6", max_tokens=700, messages=[{"role": "user", "content": prompt}])
-    return routing_result, response.content[0].text
+    return routing_result, response_text(response)
 
 # ---------- UI ----------
 
@@ -363,7 +394,11 @@ with tab1:
     source = st.sidebar.radio("Choose data", ["Demo: Declining merchant", "Demo: Healthy merchant", "Upload CSV"])
     if source == "Upload CSV":
         uploaded = st.sidebar.file_uploader("CSV with columns: date, amount, payment_method, status, decline_reason")
-        df = pd.read_csv(uploaded) if uploaded else None
+        df = None
+        if uploaded:
+            df, error = load_uploaded_csv(uploaded)
+            if error:
+                st.error(error)
     elif source == "Demo: Declining merchant":
         df = generate_demo_data(seed=42, healthy=False)
     else:
@@ -382,11 +417,11 @@ with tab1:
             fig = px.line(stats["monthly"], x="month", y="approval_rate", markers=True, title="Approval rate trend",
                            color_discrete_sequence=GREEN_COLORWAY)
             fig.update_layout(plot_bgcolor="#F7F5EF", paper_bgcolor="#F7F5EF", font_color="#33513B")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
         with cc2:
             fig2 = px.bar(stats["declines"], title="Decline reasons", color_discrete_sequence=GREEN_COLORWAY)
             fig2.update_layout(plot_bgcolor="#F7F5EF", paper_bgcolor="#F7F5EF", font_color="#33513B", showlegend=False)
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width="stretch")
 
         st.subheader("Ask the agent")
         default_q = "Analyse this merchant's payment performance, quantify the revenue impact of any decline, and give prioritised recommendations."
@@ -452,11 +487,3 @@ with tab2:
 
             st.write("")
             st.markdown(recommendation)
-toml
-[theme]
-base="light"
-backgroundColor="#F7F5EF"
-secondaryBackgroundColor="#EDF0E4"
-textColor="#33513B"
-primaryColor="#4F7A52"
-font="sans serif"
