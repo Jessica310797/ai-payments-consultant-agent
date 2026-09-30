@@ -217,7 +217,7 @@ LOGO_FILES = {"Visa": ("visa.svg", "#1A1F71"), "Mastercard": ("mastercard.svg", 
               "Eftpos": ("eftpos.svg", None)}
 
 @st.cache_data(show_spinner=False)
-def _logo_data_uri(name):
+def _logo_data_uri(name, mtime=None):  # mtime is part of the cache key
     file, colour = LOGO_FILES.get(name, (None, None))
     path = LOGO_DIR / file if file else None
     if not path or not path.exists():
@@ -228,7 +228,9 @@ def _logo_data_uri(name):
     return "data:image/svg+xml;base64," + base64.b64encode(svg.encode()).decode()
 
 def logo(name, height=18):
-    uri = _logo_data_uri(name)
+    file = LOGO_FILES.get(name, (None,))[0]
+    path = LOGO_DIR / file if file else None
+    uri = _logo_data_uri(name, path.stat().st_mtime if path and path.exists() else None)
     if uri:
         return f'<img class="logo" src="{uri}" alt="{name}" title="{name}" style="height:{height}px">'
     if name == "Eftpos":
@@ -600,10 +602,12 @@ def generate_demo_data(seed, healthy=False):
                          "payment_method": np.random.choice(payment_methods, p=[0.35, 0.3, 0.15, 0.1, 0.1]),
                          "status": "approved" if approved else "declined",
                          "decline_reason": None if approved else np.random.choice(reasons, p=w)})
-    return add_card_attributes(pd.DataFrame(rows), seed, healthy)
+    return pd.DataFrame(rows)
 
 def add_card_attributes(df, seed, healthy):
-    """Demo-only: assign debit/credit and the network each transaction was routed on."""
+    """Demo-only: assign debit/credit and the network each transaction was routed on.
+    Kept outside the cached generator so changes here take effect without a cache clear."""
+    df = df.copy()
     rng = np.random.default_rng(seed + 1000)
     n, pm = len(df), df["payment_method"].to_numpy()
     debit_p = pd.Series(pm).map({"Eftpos": 1.0, "Amex": 0.0, "Visa": 0.55, "Mastercard": 0.5, "Apple Pay": 0.6}).fillna(0.5)
@@ -724,9 +728,9 @@ if source == "Upload CSV":
         if error:
             st.error(error)
 elif source == "Demo: Declining merchant":
-    df = generate_demo_data(seed=42, healthy=False)
+    df = add_card_attributes(generate_demo_data(seed=42, healthy=False), seed=42, healthy=False)
 else:
-    df = generate_demo_data(seed=99, healthy=True)
+    df = add_card_attributes(generate_demo_data(seed=99, healthy=True), seed=99, healthy=True)
 
 # Ledger figures from the loaded data (monthly averages over the period)
 if df is not None:
