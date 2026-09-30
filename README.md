@@ -21,3 +21,13 @@ Upload a merchant's acquirer invoice or statement (PDF) in the sidebar under **A
 rates. Those rates pre-fill the Fee Assumptions table (rows marked `Invoice`), so the ledger's Total cost uses them,
 and the ledger also shows the invoice's actual total. Requires `ANTHROPIC_API_KEY` in the app's secrets, like the
 other AI features. Each PDF is sent once and cached.
+
+## Secrets
+
+In Streamlit **Settings → Secrets**:
+
+```toml
+ANTHROPIC_API_KEY = "sk-ant-..."
+# Only needed if the key isn't scoped to a workspace:
+# ANTHROPIC_WORKSPACE_ID = "wrkspc_..."
+```

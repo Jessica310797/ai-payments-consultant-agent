@@ -336,7 +336,11 @@ def clean_api_key(raw):
     return "".join(str(raw).split()).strip("\"'")
 
 def get_client():
-    return Anthropic(api_key=clean_api_key(st.secrets["ANTHROPIC_API_KEY"]))
+    # Keys that aren't scoped to a workspace must name one on every request. Optional secret:
+    # ANTHROPIC_WORKSPACE_ID = "wrkspc_..." (a workspace-scoped key needs nothing extra).
+    workspace = st.secrets.get("ANTHROPIC_WORKSPACE_ID")
+    headers = {"anthropic-workspace-id": clean_api_key(workspace)} if workspace else None
+    return Anthropic(api_key=clean_api_key(st.secrets["ANTHROPIC_API_KEY"]), default_headers=headers)
 
 _SECRET_PATTERN = re.compile(r"sk-ant-[A-Za-z0-9_\-]*")
 
@@ -470,7 +474,11 @@ def _describe_api_error(e):
         detail = ""
         if isinstance(e.body, dict):
             detail = (e.body.get("error") or {}).get("message", "")
-        return f"The AI service returned an error ({e.status_code}{': ' + redact(detail)[:160] if detail else ''})."
+        if "anthropic-workspace-id" in detail:
+            return ("This API key isn't linked to a workspace. Either create a new key inside a workspace in the "
+                    "Claude Console and use that, or add ANTHROPIC_WORKSPACE_ID = \"wrkspc_…\" (the workspace's ID) "
+                    "to the app's secrets alongside the key.")
+        return f"The AI service returned an error ({e.status_code}{': ' + redact(detail)[:400] if detail else ''})."
     return f"Unexpected error: {type(e).__name__}: {redact(str(e))[:160]}"
 
 def _json_from_text(text):
