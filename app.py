@@ -1,5 +1,6 @@
 
 import json
+from datetime import date
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -77,27 +78,79 @@ button[kind="primary"] {
 .ledger-row {
     display: flex;
     justify-content: space-between;
+    align-items: baseline;
     padding: 10px 0;
     border-bottom: 0.5px solid #DCE1D3;
     font-size: 14px;
 }
 .ledger-row:last-child { border-bottom: none; }
 .ledger-row .label { color: #7C8577; }
-.ledger-row .value { font-weight: 600; color: #33513B; }
-.ledger-row .value .improved { color: #7FA671; }
+.metric-tile .ledger-row .value { font-size: 14px; letter-spacing: 0; font-weight: 600; color: #33513B; }
+.ledger-row .value .improved { color: #4F7A52; }
+
+.block-container { padding-top: 3.5rem; max-width: 1200px; }
+footer { visibility: hidden; }
+
+.hero {
+    display: flex; justify-content: space-between; align-items: flex-end;
+    flex-wrap: wrap; gap: 12px; margin-bottom: 18px;
+}
+.hero .eyebrow {
+    font-size: 12px; font-weight: 600; letter-spacing: 0.08em;
+    text-transform: uppercase; color: #7C8577; margin-bottom: 6px;
+}
+.hero .title { font-size: 32px; font-weight: 700; letter-spacing: -0.02em; color: #33513B; line-height: 1.1; }
+.hero .subtitle { font-size: 15px; color: #7C8577; margin-top: 6px; }
+.pill {
+    display: inline-block; background: #E5E9DC; color: #33513B;
+    border-radius: 999px; padding: 6px 14px; font-size: 13px; font-weight: 600;
+}
+.pill .dot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: #4F7A52; margin-right: 8px; vertical-align: 1px;
+}
+
+.metric-tile { height: 100%; }
+.metric-tile .sub { font-size: 12px; margin-top: 8px; color: #7C8577; }
+.metric-tile .sub.down { color: #A4502F; font-weight: 600; }
+.metric-tile .sub.up { color: #4F7A52; font-weight: 600; }
+
+.section-label {
+    font-size: 12px; font-weight: 600; letter-spacing: 0.08em;
+    text-transform: uppercase; color: #7C8577; margin: 18px 0 8px;
+}
+.empty-state {
+    border: 1px dashed #C9D1BE; border-radius: 16px; padding: 48px 24px;
+    text-align: center; color: #7C8577; font-size: 14px;
+}
+.empty-state .big { font-size: 17px; font-weight: 600; color: #33513B; margin-bottom: 6px; }
 </style>
 """, unsafe_allow_html=True)
 
 GREEN_COLORWAY = ["#4F7A52", "#7FA671", "#33513B", "#A9BFA0"]
 
-def metric_tile(value, label, accent=False):
+def metric_tile(value, label, accent=False, sub=None, sub_tone=None):
     accent_class = " accent" if accent else ""
+    sub_html = f'<div class="sub {sub_tone or ""}">{sub}</div>' if sub else ""
     st.markdown(f"""
     <div class="metric-tile">
         <div class="value{accent_class}">{value}</div>
         <div class="label">{label}</div>
+        {sub_html}
     </div>
     """, unsafe_allow_html=True)
+
+def style_chart(fig, height=300):
+    fig.update_layout(
+        height=height, margin=dict(l=8, r=8, t=8, b=8),
+        plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter, sans-serif", color="#33513B", size=12),
+        hoverlabel=dict(bgcolor="#FFFFFF", bordercolor="#DCE1D3", font_color="#33513B"),
+        showlegend=False, xaxis_title=None, yaxis_title=None,
+    )
+    fig.update_xaxes(showgrid=False, linecolor="#DCE1D3", tickfont_color="#7C8577")
+    fig.update_yaxes(gridcolor="#E5E9DC", zeroline=False, tickfont_color="#7C8577")
+    return fig
 
 # ---------- ONE-TIME SETUP (cached) ----------
 
@@ -378,21 +431,47 @@ Write a short recommendation (under 300 words) covering:
 
 # ---------- UI ----------
 
-st.markdown("""
-<div style="margin-bottom: 6px;">
-    <div style="font-size: 30px; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 6px;">Payments Consultant</div>
-    <div style="font-size: 15px; color: #7C8577;">Performance analysis and routing strategy, grounded in real calculation.</div>
+REFORM_DATE = date(2026, 10, 1)
+days_to_reform = (REFORM_DATE - date.today()).days
+if days_to_reform > 1:
+    reform_pill = f"RBA reform in {days_to_reform} days"
+elif days_to_reform == 1:
+    reform_pill = "RBA reform starts tomorrow"
+else:
+    reform_pill = "RBA reform in effect since 1 Oct 2026"
+
+st.markdown(f"""
+<div class="hero">
+    <div>
+        <div class="eyebrow">AI payments advisory</div>
+        <div class="title">Payments Consultant</div>
+        <div class="subtitle">Performance analysis and routing strategy, grounded in real calculation.</div>
+    </div>
+    <div class="pill"><span class="dot"></span>{reform_pill}</div>
 </div>
 """, unsafe_allow_html=True)
 
 tab1, tab2 = st.tabs(["Performance analysis", "Routing advisor"])
 
+CSV_TEMPLATE = (
+    "date,amount,payment_method,status,decline_reason\n"
+    "2026-01-01,42.50,Visa,approved,\n"
+    "2026-01-01,18.00,Eftpos,declined,Insufficient Funds\n"
+)
+
 with tab1:
-    st.sidebar.header("Data source")
-    source = st.sidebar.radio("Choose data", ["Demo: Declining merchant", "Demo: Healthy merchant", "Upload CSV"])
+    source = st.radio("Data source", ["Demo: Declining merchant", "Demo: Healthy merchant", "Upload CSV"],
+                      horizontal=True, label_visibility="collapsed")
+    df = None
     if source == "Upload CSV":
-        uploaded = st.sidebar.file_uploader("CSV with columns: date, amount, payment_method, status, decline_reason")
-        df = None
+        up_col, tmpl_col = st.columns([3, 1])
+        with up_col:
+            uploaded = st.file_uploader("CSV with columns: date, amount, payment_method, status, decline_reason",
+                                        type=["csv"])
+        with tmpl_col:
+            st.write("")
+            st.download_button("Download CSV template", CSV_TEMPLATE, file_name="transactions_template.csv",
+                               mime="text/csv", width="stretch")
         if uploaded:
             df, error = load_uploaded_csv(uploaded)
             if error:
@@ -404,84 +483,138 @@ with tab1:
 
     if df is not None:
         stats = build_data_summary(df)
-        c1, c2, c3 = st.columns(3)
-        with c1: metric_tile(f"{(df['status']=='approved').mean()*100:.1f}%", "Approval rate", accent=True)
-        with c2: metric_tile(f"${stats['avg_transaction_value']:.0f}", "Avg transaction")
-        with c3: metric_tile(f"{stats['monthly_txn_count']:.0f}", "Monthly volume")
+        monthly = stats["monthly"]
+        overall_rate = (df["status"] == "approved").mean() * 100
+        first_rate, last_rate = monthly["approval_rate"].iloc[0], monthly["approval_rate"].iloc[-1]
+        change = last_rate - first_rate
+        at_risk = max(calculate_revenue_impact(last_rate, first_rate, stats["monthly_txn_count"],
+                                               stats["avg_transaction_value"])["estimated_monthly_revenue_impact"], 0)
 
-        st.write("")
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            tone = "down" if change < -0.5 else "up" if change > 0.5 else None
+            metric_tile(f"{overall_rate:.1f}%", "Approval rate", accent=True,
+                        sub=f"{change:+.1f} pts since {pd.Period(monthly['month'].iloc[0]).strftime('%b %Y')}", sub_tone=tone)
+        with c2: metric_tile(f"${stats['avg_transaction_value']:.0f}", "Avg transaction")
+        with c3: metric_tile(f"{stats['monthly_txn_count']:,.0f}", "Monthly transactions")
+        with c4: metric_tile(f"${at_risk:,.0f}", "Est. revenue lost / month",
+                             sub="vs. first month's approval rate")
+
+        st.markdown('<div class="section-label">Trends</div>', unsafe_allow_html=True)
         cc1, cc2 = st.columns(2)
         with cc1:
-            fig = px.line(stats["monthly"], x="month", y="approval_rate", markers=True, title="Approval rate trend",
-                           color_discrete_sequence=GREEN_COLORWAY)
-            fig.update_layout(plot_bgcolor="#F7F5EF", paper_bgcolor="#F7F5EF", font_color="#33513B")
-            st.plotly_chart(fig, width="stretch")
+            with st.container(border=True):
+                st.markdown("**Approval rate by month**")
+                fig = px.line(monthly, x="month", y="approval_rate", markers=True,
+                              color_discrete_sequence=GREEN_COLORWAY)
+                fig.update_traces(line_width=2, marker_size=8,
+                                  hovertemplate="%{x}<br><b>%{y:.1f}%</b> approved<extra></extra>")
+                style_chart(fig).update_yaxes(ticksuffix="%")
+                st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
         with cc2:
-            fig2 = px.bar(stats["declines"], title="Decline reasons", color_discrete_sequence=GREEN_COLORWAY)
-            fig2.update_layout(plot_bgcolor="#F7F5EF", paper_bgcolor="#F7F5EF", font_color="#33513B", showlegend=False)
-            st.plotly_chart(fig2, width="stretch")
+            with st.container(border=True):
+                st.markdown("**Decline reasons**")
+                declines = stats["declines"].sort_values().reset_index()
+                declines.columns = ["reason", "count"]
+                fig2 = px.bar(declines, x="count", y="reason", orientation="h",
+                              color_discrete_sequence=GREEN_COLORWAY)
+                fig2.update_traces(marker_line_width=0,
+                                   hovertemplate="%{y}<br><b>%{x:,}</b> declines<extra></extra>")
+                style_chart(fig2).update_layout(bargap=0.35)
+                fig2.update_xaxes(showgrid=True, gridcolor="#E5E9DC")
+                fig2.update_yaxes(showgrid=False)
+                st.plotly_chart(fig2, width="stretch", config={"displayModeBar": False})
 
-        st.subheader("Ask the agent")
-        default_q = "Analyse this merchant's payment performance, quantify the revenue impact of any decline, and give prioritised recommendations."
-        question = st.text_area("Question", value=default_q, height=100)
+        st.markdown('<div class="section-label">Ask the agent</div>', unsafe_allow_html=True)
+        with st.container(border=True):
+            default_q = "Analyse this merchant's payment performance, quantify the revenue impact of any decline, and give prioritised recommendations."
+            question = st.text_area("Question", value=default_q, height=90, label_visibility="collapsed")
+            if st.button("Run analysis", type="primary"):
+                with st.spinner("Agent is analysing..."):
+                    answer, tool_log = run_agent(df, question)
+                st.session_state["analysis"] = {"source": source, "answer": answer, "tool_log": tool_log}
 
-        if st.button("Run analysis", type="primary"):
-            with st.spinner("Agent is analysing..."):
-                answer, tool_log = run_agent(df, question)
-            if tool_log:
-                with st.expander(f"Tool calls made ({len(tool_log)})"):
-                    for t in tool_log:
-                        st.code(t)
-            st.markdown(answer)
-    else:
-        st.info("Upload a CSV or select a demo dataset from the sidebar to begin.")
+        analysis = st.session_state.get("analysis")
+        if analysis and analysis["source"] == source:
+            with st.container(border=True):
+                st.markdown(analysis["answer"])
+                if analysis["tool_log"]:
+                    with st.expander(f"How this was calculated ({len(analysis['tool_log'])} tool calls)"):
+                        for t in analysis["tool_log"]:
+                            st.code(t)
+    elif source == "Upload CSV":
+        st.markdown("""
+        <div class="empty-state">
+            <div class="big">Upload a transaction CSV to begin</div>
+            Needs columns: date, amount, payment_method, status, decline_reason.
+            Download the template above for an example.
+        </div>""", unsafe_allow_html=True)
 
 with tab2:
-    st.subheader("Routing advisor — post-reform interchange impact")
-    st.caption("A quick assessment of whether a merchant's current debit routing mix across eftpos, Visa, and Mastercard will still be optimal after the 1 October 2026 RBA reform.")
+    st.markdown("**Post-reform routing check** — will this merchant's debit routing mix across eftpos, "
+                "Visa and Mastercard still be cost-optimal after the 1 October 2026 RBA reform?")
 
-    with st.form("routing_form"):
-        merchant_name = st.text_input("Merchant name", value="Merchant A")
-        monthly_turnover = st.number_input("Monthly card turnover ($)", min_value=0.0, value=100000.0, step=1000.0)
-        debit_pct = st.slider("% of turnover that is debit (dual-network eligible)", 0, 100, 60)
-        avg_debit_value = st.number_input("Average debit transaction value ($)", min_value=1.0, value=45.0)
+    form_col, result_col = st.columns([5, 7], gap="large")
 
-        st.markdown("**Current debit routing split** (should add up to 100%)")
-        c1, c2, c3 = st.columns(3)
-        eftpos_share_pct = c1.number_input("Eftpos %", min_value=0, max_value=100, value=35)
-        visa_share_pct = c2.number_input("Visa Debit %", min_value=0, max_value=100, value=40)
-        mastercard_share_pct = c3.number_input("Mastercard Debit %", min_value=0, max_value=100, value=25)
+    with form_col:
+        with st.form("routing_form"):
+            merchant_name = st.text_input("Merchant name", value="Merchant A")
+            monthly_turnover = st.number_input("Monthly card turnover ($)", min_value=0.0, value=100000.0, step=1000.0)
+            debit_pct = st.slider("% of turnover that is dual-network debit", 0, 100, 60)
+            avg_debit_value = st.number_input("Average debit transaction ($)", min_value=1.0, value=45.0)
 
-        total_pct = eftpos_share_pct + visa_share_pct + mastercard_share_pct
-        if total_pct != 100:
-            st.warning(f"These currently add up to {total_pct}%, not 100%. Adjust before submitting.")
+            st.markdown("**Current debit routing split**")
+            c1, c2, c3 = st.columns(3)
+            eftpos_share_pct = c1.number_input("Eftpos %", min_value=0, max_value=100, value=35)
+            visa_share_pct = c2.number_input("Visa %", min_value=0, max_value=100, value=40)
+            mastercard_share_pct = c3.number_input("Mastercard %", min_value=0, max_value=100, value=25)
 
-        is_surcharging = st.checkbox("Merchant currently surcharges card payments")
-        submitted = st.form_submit_button("Generate recommendation", type="primary")
+            is_surcharging = st.checkbox("Merchant currently surcharges card payments")
+            submitted = st.form_submit_button("Generate recommendation", type="primary", width="stretch")
 
+    total_pct = eftpos_share_pct + visa_share_pct + mastercard_share_pct
     if submitted:
         if total_pct != 100:
-            st.error("Routing percentages must add up to 100% - please correct and resubmit.")
+            with form_col:
+                st.error(f"Routing split adds up to {total_pct}%, not 100%. Please adjust and resubmit.")
         else:
-            with st.spinner("Calculating and drafting recommendation..."):
-                routing_result, recommendation = run_routing_advisor(
-                    merchant_name, monthly_turnover, debit_pct, avg_debit_value,
-                    eftpos_share_pct, visa_share_pct, mastercard_share_pct, is_surcharging
-                )
+            with result_col:
+                with st.spinner("Calculating and drafting recommendation..."):
+                    routing_result, recommendation = run_routing_advisor(
+                        merchant_name, monthly_turnover, debit_pct, avg_debit_value,
+                        eftpos_share_pct, visa_share_pct, mastercard_share_pct, is_surcharging
+                    )
+            st.session_state["routing"] = {"merchant": merchant_name, "result": routing_result,
+                                           "recommendation": recommendation}
 
-            c1, c2 = st.columns(2)
-            with c1: metric_tile(f"${routing_result['monthly_cost_current_routing_before_reform']:,.0f}", "Cost today", accent=True)
-            with c2: metric_tile(f"${routing_result['monthly_cost_current_routing_after_reform']:,.0f}", "Cost post-reform (same routing)")
+    with result_col:
+        routing = st.session_state.get("routing")
+        if not routing:
+            st.markdown("""
+            <div class="empty-state">
+                <div class="big">No recommendation yet</div>
+                Enter the merchant's details and routing split, then generate a recommendation.
+            </div>""", unsafe_allow_html=True)
+        else:
+            r = routing["result"]
+            st.markdown(f"#### {routing['merchant']}")
+            c1, c2, c3 = st.columns(3)
+            with c1: metric_tile(f"${r['monthly_cost_current_routing_before_reform']:,.0f}", "Monthly cost today")
+            with c2: metric_tile(f"${r['monthly_cost_current_routing_after_reform']:,.0f}", "Cost post-reform")
+            with c3: metric_tile(f"${r['monthly_savings_available_after_reform']:,.0f}", "Saving via eftpos routing",
+                                 accent=True)
 
             st.write("")
-            b = routing_result["breakdown_before_reform"]
-            a = routing_result["breakdown_after_reform"]
+            b, a = r["breakdown_before_reform"], r["breakdown_after_reform"]
             rows_html = "".join([
                 f'<div class="ledger-row"><span class="label">{scheme}</span>'
-                f'<span class="value">${b[key]:,.0f} \u2192 <span class="improved">${a[key]:,.0f}</span></span></div>'
+                f'<span class="value">${b[key]:,.0f} → <span class="improved">${a[key]:,.0f}</span></span></div>'
                 for scheme, key in [("Eftpos", "eftpos"), ("Visa debit", "visa_debit"), ("Mastercard debit", "mastercard_debit")]
             ])
-            st.markdown(f'<div class="metric-tile"><div style="font-weight:600; margin-bottom:8px;">Routing cost by scheme</div>{rows_html}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-tile"><div style="font-weight:600; margin-bottom:8px;">'
+                        f'Monthly routing cost by scheme <span style="font-weight:400; color:#7C8577;">'
+                        f'(today → post-reform)</span></div>{rows_html}</div>', unsafe_allow_html=True)
 
             st.write("")
-            st.markdown(recommendation)
+            with st.container(border=True):
+                st.markdown(routing["recommendation"])
