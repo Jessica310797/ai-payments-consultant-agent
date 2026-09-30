@@ -1,5 +1,6 @@
 
 import json
+import re
 import hashlib
 import base64
 from pathlib import Path
@@ -329,8 +330,19 @@ def style_chart(fig, height=260, legend=False):
 # ---------- ONE-TIME SETUP (cached) ----------
 
 @st.cache_resource
+def clean_api_key(raw):
+    """Keys pasted into Streamlit secrets often pick up a space, line break or quotes, which makes the HTTP
+    header invalid. API keys never contain whitespace or quotes, so drop them."""
+    return "".join(str(raw).split()).strip("\"'")
+
 def get_client():
-    return Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
+    return Anthropic(api_key=clean_api_key(st.secrets["ANTHROPIC_API_KEY"]))
+
+_SECRET_PATTERN = re.compile(r"sk-ant-[A-Za-z0-9_\-]*")
+
+def redact(text):
+    """Never show an API key on screen, even inside an error message."""
+    return _SECRET_PATTERN.sub("sk-ant-…(hidden)", str(text))
 
 @st.cache_resource
 def get_knowledge_base():
@@ -449,14 +461,17 @@ def _describe_api_error(e):
         return "The request to the AI service timed out - please try again."
     if isinstance(e, anthropic.APIConnectionError):
         cause = e.__cause__
+        if cause is not None and "header" in str(cause).lower():
+            return ("The Anthropic API key in the app's secrets isn't valid as written - re-paste it in "
+                    "Settings → Secrets as ANTHROPIC_API_KEY = \"sk-ant-…\" on a single line.")
         return ("Couldn't reach the AI service"
-                + (f" ({type(cause).__name__}: {str(cause)[:120]})" if cause else "") + " - please try again.")
+                + (f" ({type(cause).__name__}: {redact(str(cause))[:120]})" if cause else "") + " - please try again.")
     if isinstance(e, anthropic.APIStatusError):
         detail = ""
         if isinstance(e.body, dict):
             detail = (e.body.get("error") or {}).get("message", "")
-        return f"The AI service returned an error ({e.status_code}{': ' + detail[:160] if detail else ''})."
-    return f"Unexpected error: {type(e).__name__}: {str(e)[:160]}"
+        return f"The AI service returned an error ({e.status_code}{': ' + redact(detail)[:160] if detail else ''})."
+    return f"Unexpected error: {type(e).__name__}: {redact(str(e))[:160]}"
 
 def _json_from_text(text):
     """Parse a JSON object from model text, tolerating ```json fences or a sentence around it."""
@@ -997,10 +1012,10 @@ if invoice_pdf is not None:
                     invoice = extract_invoice(pdf_bytes)
                 except InvoiceError as e:
                     status.update(label="Couldn't read the invoice", state="error", expanded=True)
-                    st.error(str(e))
+                    st.error(redact(str(e)))
                 except Exception as e:   # e.g. no ANTHROPIC_API_KEY in the app's secrets
                     status.update(label="Couldn't read the invoice", state="error", expanded=True)
-                    st.error(f"{type(e).__name__}: {str(e)[:200]}")
+                    st.error(f"{type(e).__name__}: {redact(str(e))[:200]}")
                 if invoice is not None and not invoice.get("is_card_fee_document"):
                     status.update(label="Not a card fee invoice", state="error", expanded=True)
                     st.warning("This doesn't look like a card fee invoice or statement.")
@@ -1187,9 +1202,13 @@ if df is not None:
             default_q = "Analyse this merchant's payment performance, quantify the revenue impact of any decline, and give prioritised recommendations."
             question = st.text_area("Question", value=default_q, height=110, label_visibility="collapsed")
             if st.button("Run analysis", type="primary", width="stretch"):
-                with st.spinner("Agent is analysing..."):
-                    answer, tool_log = run_agent(df, question)
-                st.session_state["analysis"] = {"source": source, "answer": answer, "tool_log": tool_log}
+                try:
+                    with st.spinner("Agent is analysing..."):
+                        answer, tool_log = run_agent(df, question)
+                    st.session_state["analysis"] = {"source": source, "answer": answer, "tool_log": tool_log}
+                except Exception as e:
+                    st.error(_describe_api_error(e) if isinstance(e, anthropic.APIError)
+                             else f"The analysis couldn't run ({type(e).__name__}: {redact(str(e))[:160]}).")
         with a2:
             analysis = st.session_state.get("analysis")
             with st.container(height=200, border=False):
@@ -1253,13 +1272,17 @@ with r3c1:
 
 if submitted and total_pct == 100:
     with r3c2:
-        with st.spinner("Calculating and drafting recommendation..."):
-            routing_result, recommendation = run_routing_advisor(
-                merchant_name, monthly_turnover, debit_pct, avg_debit_value,
-                eftpos_share_pct, visa_share_pct, mastercard_share_pct, is_surcharging
-            )
-    st.session_state["routing"] = {"merchant": merchant_name, "result": routing_result,
-                                   "recommendation": recommendation}
+        try:
+            with st.spinner("Calculating and drafting recommendation..."):
+                routing_result, recommendation = run_routing_advisor(
+                    merchant_name, monthly_turnover, debit_pct, avg_debit_value,
+                    eftpos_share_pct, visa_share_pct, mastercard_share_pct, is_surcharging
+                )
+            st.session_state["routing"] = {"merchant": merchant_name, "result": routing_result,
+                                           "recommendation": recommendation}
+        except Exception as e:
+            st.error(_describe_api_error(e) if isinstance(e, anthropic.APIError)
+                     else f"The recommendation couldn't be generated ({type(e).__name__}: {redact(str(e))[:160]}).")
 
 routing = st.session_state.get("routing")
 
