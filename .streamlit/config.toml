@@ -5,3 +5,7 @@ secondaryBackgroundColor="#F3E7D2"
 textColor="#1D2B29"
 primaryColor="#1D4B45"
 font="Poppins:https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap"
+
+[client]
+# Show only the error type on unexpected crashes - tracebacks can include secrets such as API keys
+showErrorDetails = "type"
