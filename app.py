@@ -153,6 +153,10 @@ div[data-testid="stForm"] {{ border: none; padding: 0; }}
     background: rgba(255,255,255,0.08); border: 1px dashed rgba(255,255,255,0.45); color: #FFFFFF;
 }}
 [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] * {{ color: #FFFFFF; }}
+[data-testid="stSidebar"] [data-testid="stExpander"] details {{ background: {CREAM}; border-radius: 10px; border: none; }}
+[data-testid="stSidebar"] [data-testid="stExpander"] summary,
+[data-testid="stSidebar"] [data-testid="stExpander"] summary * {{ color: {INK} !important; font-weight: 600; }}
+[data-testid="stSidebar"] [data-testid="stExpander"] [data-testid="stCaptionContainer"] * {{ color: {MUTED} !important; }}
 [data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button {{
     background: {ORANGE}; border: none; color: #FFFFFF;
 }}
@@ -430,45 +434,77 @@ debit and credit). Map eftpos / EFTPOS / CHQ / SAV to Eftpos. Wallets such as Ap
 - notes: one or two short sentences on anything a consultant should know (e.g. figures that look inconsistent, \
 fees you couldn't place)."""
 
+INVOICE_FALLBACK_MODEL = "claude-sonnet-4-6"   # the model the rest of the app already uses
+
 class InvoiceError(Exception):
     pass
+
+def _describe_api_error(e):
+    """Short, specific message for the sidebar - specific enough to diagnose from a screenshot."""
+    if isinstance(e, anthropic.AuthenticationError):
+        return "The app's Anthropic API key was rejected - check ANTHROPIC_API_KEY in the app's secrets."
+    if isinstance(e, anthropic.RateLimitError):
+        return "Too many requests right now - please try again in a minute."
+    if isinstance(e, anthropic.APIConnectionError):
+        return "Couldn't reach the AI service - please try again."
+    if isinstance(e, anthropic.APIStatusError):
+        detail = ""
+        if isinstance(e.body, dict):
+            detail = (e.body.get("error") or {}).get("message", "")
+        return f"The AI service returned an error ({e.status_code}{': ' + detail[:160] if detail else ''})."
+    return f"Unexpected error: {type(e).__name__}: {str(e)[:160]}"
+
+def _json_from_text(text):
+    """Parse a JSON object from model text, tolerating ```json fences or a sentence around it."""
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end == -1:
+        raise InvoiceError("No fee data came back from the document.")
+    try:
+        return json.loads(text[start:end + 1])
+    except json.JSONDecodeError as e:
+        raise InvoiceError("The fee data that came back wasn't readable - please try again.") from e
 
 @st.cache_data(show_spinner=False, max_entries=20)
 def extract_invoice(pdf_bytes):
     """Read an acquirer invoice/statement PDF with Claude and return the fee data as a dict.
     Cached on the file's bytes, so each invoice is only sent once."""
+    client = get_client()
+    document = {"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
+                                               "data": base64.standard_b64encode(pdf_bytes).decode("utf-8")}}
     try:
-        response = get_client().beta.messages.create(
+        response = client.beta.messages.create(
             model=INVOICE_MODEL,
             max_tokens=16000,
             betas=["server-side-fallback-2026-07-01"],
             fallbacks="default",    # if a safety classifier declines, re-run on Anthropic's recommended fallback
-            output_config={"effort": "medium",
+            output_config={"effort": "low",     # simple extraction: low effort keeps it quick
                            "format": {"type": "json_schema", "schema": INVOICE_SCHEMA}},
-            messages=[{"role": "user", "content": [
-                {"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
-                                                "data": base64.standard_b64encode(pdf_bytes).decode("utf-8")}},
-                {"type": "text", "text": INVOICE_PROMPT},
-            ]}],
+            messages=[{"role": "user", "content": [document, {"type": "text", "text": INVOICE_PROMPT}]}],
         )
-    except anthropic.BadRequestError as e:
-        raise InvoiceError("The PDF couldn't be read. Is it a valid, unencrypted PDF under 100 pages?") from e
-    except anthropic.AuthenticationError as e:
-        raise InvoiceError("The app's Anthropic API key was rejected.") from e
-    except anthropic.RateLimitError as e:
-        raise InvoiceError("Too many requests right now - please try again in a minute.") from e
-    except anthropic.APIStatusError as e:
-        raise InvoiceError(f"The AI service returned an error ({e.status_code}). Please try again.") from e
-    except anthropic.APIConnectionError as e:
-        raise InvoiceError("Couldn't reach the AI service. Check the connection and try again.") from e
+    except (TypeError, anthropic.NotFoundError, anthropic.PermissionDeniedError, anthropic.BadRequestError):
+        # An older SDK on the server (TypeError on the newer parameters), or an API key without access to this
+        # model or beta: fall back to a plain request on the model the app already uses, asking for JSON in text.
+        try:
+            response = client.messages.create(
+                model=INVOICE_FALLBACK_MODEL,
+                max_tokens=16000,
+                messages=[{"role": "user", "content": [document, {"type": "text", "text": (
+                    INVOICE_PROMPT + "\n\nReply with only a JSON object matching this JSON schema, no other text:\n"
+                    + json.dumps(INVOICE_SCHEMA))}]}],
+            )
+        except anthropic.APIError as e:
+            raise InvoiceError(_describe_api_error(e)) from e
+    except anthropic.APIError as e:
+        raise InvoiceError(_describe_api_error(e)) from e
     if response.stop_reason == "refusal":
         raise InvoiceError("The document couldn't be processed.")
     if response.stop_reason == "max_tokens":
         raise InvoiceError("The invoice is too long to extract in one go - try uploading fewer pages.")
-    text = next((b.text for b in response.content if b.type == "text"), None)
-    if not text:
-        raise InvoiceError("No fee data came back from the document.")
-    return json.loads(text)
+    text = "".join(b.text for b in response.content if b.type == "text")
+    data = _json_from_text(text)
+    data.setdefault("schemes", [])
+    data.setdefault("is_card_fee_document", True)
+    return data
 
 def _weighted(lines, field, weight):
     vals = [(l[field], l.get(weight) or 0) for l in lines if l.get(field) is not None]
@@ -945,16 +981,27 @@ if invoice_pdf is not None:
     if len(pdf_bytes) > MAX_PDF_BYTES:
         st.sidebar.error("That PDF is over 30 MB - please upload a smaller file.")
     else:
-        try:
-            with st.sidebar, st.spinner("Reading invoice…"):
-                invoice = extract_invoice(pdf_bytes)
-        except InvoiceError as e:
-            st.sidebar.error(str(e))
-        except Exception as e:   # e.g. no API key configured in the app's secrets
-            st.sidebar.error(f"Invoice reading isn't available right now ({type(e).__name__}).")
-        if invoice is not None and not invoice.get("is_card_fee_document"):
-            st.sidebar.warning("This doesn't look like a card fee invoice or statement.")
-            invoice = None
+        with st.sidebar:
+            with st.status("Reading invoice with Claude - this can take up to a minute…") as status:
+                try:
+                    invoice = extract_invoice(pdf_bytes)
+                except InvoiceError as e:
+                    status.update(label="Couldn't read the invoice", state="error", expanded=True)
+                    st.error(str(e))
+                except Exception as e:   # e.g. no ANTHROPIC_API_KEY in the app's secrets
+                    status.update(label="Couldn't read the invoice", state="error", expanded=True)
+                    st.error(f"{type(e).__name__}: {str(e)[:200]}")
+                if invoice is not None and not invoice.get("is_card_fee_document"):
+                    status.update(label="Not a card fee invoice", state="error", expanded=True)
+                    st.warning("This doesn't look like a card fee invoice or statement.")
+                    invoice = None
+                if invoice is not None:
+                    found = (f"total fees {fmt_money(invoice['total_fees'])}" if invoice.get("total_fees") is not None
+                             else "no fee total found")
+                    status.update(label=f"Invoice read ✓ {found}", state="complete", expanded=False)
+                    st.caption(f"{len(invoice.get('schemes', []))} scheme line(s) found. "
+                               + ("Rates are applied in the Fee Assumptions table."
+                                  if df is not None else "Load transaction data to apply the rates."))
         if invoice is not None:
             invoice_key = hashlib.sha1(pdf_bytes).hexdigest()[:12]
 invoice_overrides = invoice_rates(invoice) if invoice else {}
