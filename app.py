@@ -1,10 +1,14 @@
 
 import json
+import base64
+from pathlib import Path
 from datetime import date
 import pandas as pd
 import numpy as np
 import streamlit as st
 import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from anthropic import Anthropic
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -24,6 +28,10 @@ BLUE = "#3F87D4"
 BROWN = "#5A3A1E"
 # Validated categorical order for chart series (CVD-safe on the card surface).
 SERIES = [ORANGE, MAGENTA, BLUE]
+AQUA = "#1BAF7A"
+VIOLET = "#4A3AA7"
+# One colour per card scheme, used everywhere schemes appear (validated for colour-vision deficiency).
+SCHEME_COLOURS = {"Eftpos": ORANGE, "Visa": BLUE, "Mastercard": MAGENTA, "Amex": AQUA, "Apple Pay": VIOLET}
 TINTS = {ORANGE: "#FBE3C6", MAGENTA: "#F5D4E8", BLUE: "#D7E7F8", BROWN: "#E9DDD0", TEAL: "#D5E3E0"}
 
 st.markdown(f"""
@@ -107,7 +115,8 @@ div[data-testid="stForm"] {{ border: none; padding: 0; }}
     display: flex; align-items: center; justify-content: space-between; margin-top: 6px;
 }}
 .highlight .lbl {{ font-weight: 600; font-size: 15px; line-height: 1.2; }}
-.highlight .num {{ font-weight: 800; font-size: 28px; }}
+.highlight .num {{ font-weight: 800; font-size: 28px; white-space: nowrap; }}
+.highlight {{ gap: 12px; }}
 
 .side-list {{ display: flex; flex-direction: column; justify-content: center; gap: 18px; padding: 8px 0; }}
 .side-list .row {{ display: flex; justify-content: space-between; font-size: 14px; color: {INK}; }}
@@ -135,6 +144,28 @@ div[data-testid="stForm"] {{ border: none; padding: 0; }}
 .ledger .brk {{ display: flex; justify-content: space-between; font-size: 13px; color: #FFFFFF; padding: 3px 0; }}
 .ledger .brk span:first-child {{ color: #D5E3E0; }}
 .ledger .brk.rate {{ border-top: 1px dashed rgba(255,255,255,0.25); margin-top: 4px; padding-top: 6px; }}
+
+/* Scheme logos and routing rows */
+.logo {{ height: 18px; width: auto; vertical-align: -4px; }}
+.logo-eftpos {{
+    display: inline-block; font-weight: 800; font-size: 12px; letter-spacing: -0.02em; color: #FFFFFF;
+    background: #0B3A53; border-radius: 4px; padding: 1px 6px; vertical-align: 1px; line-height: 16px;
+}}
+.scheme-legend {{ display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 16px; font-size: 13px; color: {INK}; margin-bottom: 6px; }}
+.scheme-legend .sw {{ display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: 0; }}
+.route-row {{ padding: 8px 0 10px; border-bottom: 1px solid #EFE6D6; }}
+.route-row:last-of-type {{ border-bottom: none; }}
+.route-head {{ display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: {INK}; }}
+.route-head .muted {{ color: {MUTED}; font-size: 12px; }}
+.split {{ display: flex; height: 12px; border-radius: 999px; overflow: hidden; margin: 6px 0 4px; gap: 2px; background: {CARD}; }}
+.split div {{ height: 100%; }}
+.route-to {{ font-size: 12px; color: {INK}; display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center; }}
+.route-to b {{ font-weight: 700; }}
+.route-note {{ font-size: 12px; color: {MUTED}; margin-top: 6px; }}
+.impact {{ margin-top: 10px; font-size: 13px; color: {INK}; }}
+.impact .line {{ display: flex; justify-content: space-between; padding: 4px 0; }}
+.impact .line .neg {{ color: #A4502F; font-weight: 700; }}
+.impact .line .pos {{ color: #1D6B3A; font-weight: 700; }}
 
 .empty-state {{ text-align: center; color: {MUTED}; font-size: 14px; padding: 28px 12px; }}
 .empty-state .big {{ font-size: 17px; font-weight: 600; color: {INK}; margin-bottom: 6px; }}
@@ -164,20 +195,37 @@ div[data-testid="stForm"] {{ border: none; padding: 0; }}
 def card_title(text):
     st.markdown(f'<div class="card-pill"><span>{text}</span></div>', unsafe_allow_html=True)
 
-def progress_rows(items):
-    """items: list of (label, pct, colour). Label and % are always shown as text."""
-    html = "".join(
-        f'<div class="bar-row"><span>{label}</span><span class="pct">{pct:.0f}%</span>'
-        f'<div class="bar-track" style="background:{TINTS.get(colour, "#EEE")}">'
-        f'<div class="bar-fill" style="width:{max(min(pct, 100), 0):.1f}%; background:{colour}"></div></div></div>'
-        for label, pct, colour in items)
-    st.markdown(html, unsafe_allow_html=True)
-
 def donut_html(pct, colour, big, small):
     p = max(min(pct, 100), 0)
     return (f'<div class="donut-wrap"><div class="donut" style="background:conic-gradient({colour} {p}%, '
             f'{TINTS.get(colour, "#EEE")} 0)"><div class="hole">{pct:.0f}%</div></div>'
             f'<div class="big">{big}</div><div class="small">{small}</div></div>')
+
+LOGO_DIR = (Path(__file__).parent if "__file__" in globals() else Path.cwd()) / "assets" / "logos"
+# Brand marks from Simple Icons (CC0). eftpos isn't in Simple Icons: drop the official file at
+# assets/logos/eftpos.svg and it is used automatically; otherwise a text badge is shown.
+LOGO_FILES = {"Visa": ("visa.svg", "#1A1F71"), "Mastercard": ("mastercard.svg", "#EB001B"),
+              "Amex": ("americanexpress.svg", "#2E77BC"), "Apple Pay": ("applepay.svg", "#000000"),
+              "Eftpos": ("eftpos.svg", None)}
+
+@st.cache_data(show_spinner=False)
+def _logo_data_uri(name):
+    file, colour = LOGO_FILES.get(name, (None, None))
+    path = LOGO_DIR / file if file else None
+    if not path or not path.exists():
+        return None
+    svg = path.read_text()
+    if colour:
+        svg = svg.replace("<svg ", f'<svg fill="{colour}" ', 1)
+    return "data:image/svg+xml;base64," + base64.b64encode(svg.encode()).decode()
+
+def logo(name, height=18):
+    uri = _logo_data_uri(name)
+    if uri:
+        return f'<img class="logo" src="{uri}" alt="{name}" title="{name}" style="height:{height}px">'
+    if name == "Eftpos":
+        return '<span class="logo-eftpos" title="eftpos">eftpos</span>'
+    return f"<b>{name}</b>"
 
 def fmt_money(v):
     if abs(v) >= 1_000_000:
@@ -368,6 +416,63 @@ TOOL_FUNCTIONS = {"calculate_revenue_impact": calculate_revenue_impact,
                    "retrieve_docs": retrieve_docs_tool,
                    "evaluate_routing_position": evaluate_routing_position}
 
+# ---------- SHARED: routing mix analysis (from transaction data) ----------
+
+SCHEME_DEBIT_RATE = {"Visa": VISA_DEBIT_ADVALOREM, "Mastercard": MASTERCARD_DEBIT_ADVALOREM}
+LCR_THRESHOLD = EFTPOS_FLAT_FEE / VISA_DEBIT_ADVALOREM   # above this value eftpos is the cheaper debit network
+SURCHARGE_BAN_NETWORKS = ["Eftpos", "Visa", "Mastercard"]
+
+def _debit_cost(network, amount, post_reform):
+    rate = network.map(SCHEME_DEBIT_RATE).fillna(VISA_DEBIT_ADVALOREM).to_numpy()
+    scheme = amount * rate
+    if post_reform:
+        scheme = np.minimum(scheme, POST_REFORM_DEBIT_CAP)
+    return np.where(network.to_numpy() == "Eftpos", EFTPOS_FLAT_FEE, scheme)
+
+def analyse_debit_routing(df):
+    """Approved debit transactions with their current network, a suggested post-reform network,
+    and per-transaction interchange cost under each. Returns None if routing data is missing."""
+    d = df[(df["status"] == "approved") & (df["card_type"] == "debit")].copy()
+    if "network" not in d.columns or d["network"].isna().all():
+        return None
+    d = d.dropna(subset=["network"])
+    # Scheme to fall back to when eftpos isn't cheaper: the card's own scheme
+    own_scheme = d["payment_method"].where(d["payment_method"].isin(["Visa", "Mastercard"]),
+                                           d["network"].where(d["network"] != "Eftpos", "Visa"))
+    eftpos_better = (d["amount"] >= LCR_THRESHOLD) | (d["payment_method"] == "Eftpos")
+    d["suggested"] = np.where(eftpos_better, "Eftpos", own_scheme)
+    d["cost_today"] = _debit_cost(d["network"], d["amount"].to_numpy(), post_reform=False)
+    d["cost_post_current"] = _debit_cost(d["network"], d["amount"].to_numpy(), post_reform=True)
+    d["cost_post_suggested"] = _debit_cost(d["suggested"], d["amount"].to_numpy(), post_reform=True)
+    return d
+
+def routing_split(d, column):
+    """Share (%) of transactions per network for each card brand."""
+    order = [m for m in ["Visa", "Mastercard", "Apple Pay", "Eftpos"] if m in d["payment_method"].unique()]
+    order += sorted(set(d["payment_method"].unique()) - set(order))
+    out = []
+    for m in order:
+        sub = d[d["payment_method"] == m]
+        shares = (sub[column].value_counts(normalize=True) * 100).to_dict()
+        out.append((m, len(sub), shares))
+    return out
+
+def surcharge_impact(df, debit, n_months, surcharging, rate_pct):
+    """Monthly surcharge income lost to the 1 Oct ban, routing savings, and the net effect."""
+    approved = df[df["status"] == "approved"]
+    if approved["network"].notna().any():
+        banned = approved["network"].isin(SURCHARGE_BAN_NETWORKS)
+    else:
+        banned = approved["payment_method"] != "Amex"
+    base = approved.loc[banned, "amount"].sum() / n_months
+    lost = base * rate_pct / 100 if surcharging else 0.0
+    saving = ((debit["cost_post_current"].sum() - debit["cost_post_suggested"].sum()) / n_months
+              if debit is not None else 0.0)
+    revenue = approved["amount"].sum() / n_months
+    net = saving - lost
+    return {"base": base, "lost": lost, "saving": saving, "net": net,
+            "price_rise_pct": (-net / revenue * 100) if (net < 0 and revenue) else 0.0}
+
 # ---------- DATA HELPERS ----------
 
 @st.cache_data(show_spinner=False)
@@ -413,7 +518,24 @@ def load_uploaded_csv(uploaded):
         return None, "No rows with a valid date and amount were found."
     if not df["status"].isin(["approved", "declined"]).any():
         return None, "The 'status' column must contain 'approved' or 'declined' values."
-    return df, None
+    return normalise_card_columns(df), None
+
+NETWORK_ALIASES = {"eftpos": "Eftpos", "visa": "Visa", "mastercard": "Mastercard", "mc": "Mastercard",
+                   "amex": "Amex", "american express": "Amex"}
+
+def normalise_card_columns(df):
+    """Optional columns: card_type (debit/credit) and network (the network the transaction was routed on)."""
+    df = df.copy()
+    if "card_type" in df.columns:
+        df["card_type"] = df["card_type"].astype(str).str.strip().str.lower().where(
+            lambda c: c.isin(["debit", "credit"]), "unknown")
+    else:
+        df["card_type"] = df["payment_method"].map({"Eftpos": "debit", "Amex": "credit"}).fillna("unknown")
+    if "network" in df.columns:
+        df["network"] = df["network"].astype(str).str.strip().str.lower().map(NETWORK_ALIASES)
+    else:
+        df["network"] = None
+    return df
 
 def run_agent(df, question, max_iterations=5):
     client = get_client()
@@ -465,7 +587,23 @@ def generate_demo_data(seed, healthy=False):
                          "payment_method": np.random.choice(payment_methods, p=[0.35, 0.3, 0.15, 0.1, 0.1]),
                          "status": "approved" if approved else "declined",
                          "decline_reason": None if approved else np.random.choice(reasons, p=w)})
-    return pd.DataFrame(rows)
+    return add_card_attributes(pd.DataFrame(rows), seed, healthy)
+
+def add_card_attributes(df, seed, healthy):
+    """Demo-only: assign debit/credit and the network each transaction was routed on."""
+    rng = np.random.default_rng(seed + 1000)
+    n, pm = len(df), df["payment_method"].to_numpy()
+    debit_p = pd.Series(pm).map({"Eftpos": 1.0, "Amex": 0.0, "Visa": 0.55, "Mastercard": 0.5, "Apple Pay": 0.6}).fillna(0.5)
+    is_debit = rng.random(n) < debit_p.to_numpy()
+    lcr_p = 0.6 if healthy else 0.25          # share of dual-network debit the acquirer sends via eftpos today
+    via_eftpos = rng.random(n) < lcr_p
+    wallet_scheme = np.where(rng.random(n) < 0.5, "Visa", "Mastercard")
+    home = np.select([pm == "Visa", pm == "Mastercard", pm == "Amex", pm == "Eftpos"],
+                     ["Visa", "Mastercard", "Amex", "Eftpos"], default=wallet_scheme)
+    network = np.where(is_debit & (via_eftpos | (pm == "Eftpos")), "Eftpos", home)
+    df["card_type"] = np.where(is_debit, "debit", "credit")
+    df["network"] = network
+    return df
 
 REFORM_CONTEXT = """
 RBA INTERCHANGE AND SURCHARGING REFORM - KEY FACTS (effective mostly 1 October 2026):
@@ -529,11 +667,11 @@ else:
     reform_pill = "RBA reform in effect since 1 Oct 2026"
 
 CSV_TEMPLATE = (
-    "date,amount,payment_method,status,decline_reason\n"
-    "2026-01-01,42.50,Visa,approved,\n"
-    "2026-01-01,18.00,Eftpos,declined,Insufficient Funds\n"
+    "date,amount,payment_method,status,decline_reason,card_type,network\n"
+    "2026-01-01,42.50,Visa,approved,,debit,eftpos\n"
+    "2026-01-01,120.00,Mastercard,approved,,credit,mastercard\n"
+    "2026-01-01,18.00,Eftpos,declined,Insufficient Funds,debit,eftpos\n"
 )
-METHOD_COLOURS = [ORANGE, MAGENTA, BLUE, BROWN, TEAL]
 
 def empty_state(title, body):
     st.markdown(f'<div class="empty-state"><div class="big">{title}</div>{body}</div>', unsafe_allow_html=True)
@@ -583,7 +721,9 @@ if df is not None:
 else:
     monthly_revenue = monthly_volume = atv = None
 
-# ----- Rows 1 & 2: performance -----
+# ----- Rows 1-3: payment mix, routing, performance -----
+is_surcharging, surcharge_rate = False, 0.0
+debit = None
 if df is not None:
     stats = build_data_summary(df)
     monthly = stats["monthly"]
@@ -595,9 +735,116 @@ if df is not None:
     change = last_rate - first_rate
     at_risk = max(calculate_revenue_impact(last_rate, first_rate, stats["monthly_txn_count"],
                                            stats["avg_transaction_value"])["estimated_monthly_revenue_impact"], 0)
+    approved = df[df["status"] == "approved"]
+    debit = analyse_debit_routing(df)
+
+    def split_bar(shares):
+        segs = "".join(f'<div style="width:{v:.1f}%;background:{SCHEME_COLOURS.get(n, MUTED)}" title="{n} {v:.0f}%"></div>'
+                       for n, v in sorted(shares.items(), key=lambda kv: kv[0] != "Eftpos") if v >= 0.5)
+        to = "".join(f'<span>→ {logo(n, 16)} <b>{v:.0f}%</b></span>'
+                     for n, v in sorted(shares.items(), key=lambda kv: kv[0] != "Eftpos") if v >= 0.5)
+        return f'<div class="split">{segs}</div><div class="route-to">{to}</div>'
+
+    def routing_rows(rows):
+        return "".join(
+            f'<div class="route-row"><div class="route-head"><span>{logo(m, 20)}&nbsp; {m} debit</span>'
+            f'<span class="muted">{count / n_months:,.0f} txns/mo</span></div>{split_bar(shares)}</div>'
+            for m, count, shares in rows)
 
     r1c1, r1c2, r1c3 = st.columns(3, gap="medium")
     with r1c1:
+        with st.container(key="card_mix"):
+            card_title("Payment Mix")
+            known = approved[approved["card_type"].isin(["debit", "credit"])]
+            type_share = known.groupby("card_type")["amount"].sum() / max(known["amount"].sum(), 1) * 100
+            fig = make_subplots(rows=1, cols=2, specs=[[{"type": "domain"}, {"type": "domain"}]])
+            present = []
+            for i, ct in enumerate(["debit", "credit"]):
+                part = known[known["card_type"] == ct].groupby("payment_method")["amount"].agg(["sum", "count"])
+                part = part.sort_values("sum", ascending=False)
+                present += [m for m in part.index if m not in present]
+                fig.add_trace(go.Pie(
+                    labels=part.index, values=part["sum"], hole=0.58, sort=False, direction="clockwise",
+                    marker=dict(colors=[SCHEME_COLOURS.get(m, MUTED) for m in part.index],
+                                line=dict(color=CARD, width=2)),
+                    texttemplate="%{percent:.0%}", textposition="inside", insidetextorientation="horizontal",
+                    textfont=dict(color="#FFFFFF", size=11),
+                    customdata=part["count"] / n_months,
+                    hovertemplate="%{label}<br><b>%{percent}</b> of " + ct + " value<br>"
+                                  "%{customdata:,.0f} txns/mo<extra></extra>"), 1, i + 1)
+            for i, ct in enumerate(["debit", "credit"]):
+                fig.add_annotation(text=f"<b>{ct.title()}</b><br>{type_share.get(ct, 0):.0f}%", showarrow=False,
+                                   x=0.19 + i * 0.62, y=0.5, xref="paper", yref="paper",
+                                   font=dict(size=13, color=INK))
+            style_chart(fig, height=250)
+            fig.update_layout(margin=dict(l=0, r=0, t=4, b=4))
+            st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+            st.markdown('<div class="scheme-legend">' + "".join(
+                f'<span><span class="sw" style="background:{SCHEME_COLOURS.get(m, MUTED)}"></span>{logo(m, 18)} {m}</span>'
+                for m in present) + "</div>", unsafe_allow_html=True)
+            unknown = (approved["card_type"] == "unknown").mean() * 100
+            st.caption("Share of approved transaction value by scheme." +
+                       (f" {unknown:.0f}% of transactions have no card type - add a `card_type` column."
+                        if unknown > 0 else ""))
+
+    with r1c2:
+        with st.container(key="card_routing_now"):
+            card_title("Current Debit Routing")
+            if debit is None or debit.empty:
+                empty_state("No routing data", "Add a <code>network</code> column (eftpos / visa / mastercard) "
+                            "showing which network each transaction was processed on.")
+            else:
+                lcr_now = (debit["network"] == "Eftpos").mean() * 100
+                st.markdown(routing_rows(routing_split(debit, "network")), unsafe_allow_html=True)
+                st.markdown(f'<div class="highlight"><span class="lbl">Debit routed<br>via eftpos today:</span>'
+                            f'<span class="num">{lcr_now:.0f}%</span></div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="route-note">Interchange on debit today: '
+                            f'{fmt_money(debit["cost_today"].sum() / n_months)}/mo · '
+                            f'{fmt_money(debit["cost_post_current"].sum() / n_months)}/mo from 1 Oct on this routing. '
+                            f'Credit always runs on its own scheme.</div>', unsafe_allow_html=True)
+
+    with r1c3:
+        with st.container(key="card_routing_next"):
+            card_title("Suggested Routing · 1 Oct")
+            if debit is None or debit.empty:
+                empty_state("No routing data", "Suggestions need the <code>network</code> column.")
+            else:
+                lcr_next = (debit["suggested"] == "Eftpos").mean() * 100
+                st.markdown(routing_rows(routing_split(debit, "suggested")), unsafe_allow_html=True)
+                st.markdown(f'<div class="route-note">Send dual-network debit via eftpos when the sale is '
+                            f'${LCR_THRESHOLD:,.0f} or more (5¢ vs up to 8¢); smaller sales stay on the card\'s '
+                            f'scheme. {lcr_next:.0f}% of debit via eftpos.</div>', unsafe_allow_html=True)
+
+    # Surcharge impact of the 1 Oct ban, net of the routing saving
+    with st.container(key="card_surcharge"):
+        card_title("Surcharge Impact · 1 Oct")
+        i1, i2, i3 = st.columns([2, 3, 3], gap="large", vertical_alignment="center")
+        with i1:
+            is_surcharging = st.checkbox("Merchant surcharges today", value=True, key="surcharging")
+            surcharge_rate = st.number_input("Current surcharge %", min_value=0.0, max_value=5.0, value=1.0,
+                                             step=0.1, disabled=not is_surcharging, key="surcharge_rate")
+        imp = surcharge_impact(df, debit, n_months, is_surcharging, surcharge_rate)
+        with i2:
+            st.markdown(
+                f'<div class="impact">'
+                f'<div class="line"><span>Revenue covered ({logo("Eftpos", 14)} {logo("Visa", 12)} '
+                f'{logo("Mastercard", 14)})</span><span>{fmt_money(imp["base"])}/mo</span></div>'
+                f'<div class="line"><span>Surcharge income lost</span>'
+                f'<span class="neg">−{fmt_money(imp["lost"])}/mo</span></div>'
+                f'<div class="line"><span>Saving from suggested routing</span>'
+                f'<span class="pos">+{fmt_money(imp["saving"])}/mo</span></div>'
+                f'<div class="route-note">Amex ({logo("Amex", 14)}) surcharges aren\'t covered by the ban.</div></div>',
+                unsafe_allow_html=True)
+        with i3:
+            st.markdown(
+                f'<div class="highlight"><span class="lbl">Net impact<br>from 1 Oct:</span>'
+                f'<span class="num">{"−" if imp["net"] < 0 else "+"}{fmt_money(abs(imp["net"]))}/mo</span></div>'
+                + (f'<div class="route-note">≈ {imp["price_rise_pct"]:.2f}% price rise needed to offset.</div>'
+                   if imp["net"] < 0 else '<div class="route-note">Routing savings cover the change.</div>'),
+                unsafe_allow_html=True)
+
+    r2c1, r2c2, r2c3 = st.columns(3, gap="medium")
+    with r2c1:
         with st.container(key="card_growth"):
             card_title("Approval Change")
             st.markdown('<div class="donuts">'
@@ -606,28 +853,18 @@ if df is not None:
                         + '</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="highlight"><span class="lbl">Change in<br>approval rate:</span>'
                         f'<span class="num">{change:+.1f} pts</span></div>', unsafe_allow_html=True)
-    with r1c2:
-        with st.container(key="card_methods"):
-            card_title("Payment Methods")
-            methods = stats["methods"].sort_values(ascending=False)
-            progress_rows([(m, v, METHOD_COLOURS[i % len(METHOD_COLOURS)])
-                           for i, (m, v) in enumerate(methods.items())])
-            st.caption("Approval rate by payment method")
-
-    with r1c3:
+    with r2c2:
         with st.container(key="card_trend"):
             card_title("Approval Trend")
             fig = px.area(monthly, x="month", y="approval_rate", markers=True, color_discrete_sequence=[ORANGE])
             fig.update_traces(line_width=2, marker_size=8, fillcolor="rgba(224,123,14,0.25)",
                               hovertemplate="%{x}<br><b>%{y:.1f}%</b> approved<extra></extra>")
-            style_chart(fig, height=300).update_yaxes(ticksuffix="%",
+            style_chart(fig, height=260).update_yaxes(ticksuffix="%",
                                                       range=[max(monthly["approval_rate"].min() - 3, 0), 100])
             fig.update_xaxes(tickvals=monthly["month"],
                              ticktext=[pd.Period(m).strftime("%b") for m in monthly["month"]])
             st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
-
-    r2c1, r2c2 = st.columns([1, 2], gap="medium")
-    with r2c1:
+    with r2c3:
         with st.container(key="card_declines"):
             card_title("Decline Reasons")
             declines = stats["declines"]
@@ -640,20 +877,23 @@ if df is not None:
             fig2.update_traces(marker_line_width=0, textposition="outside", cliponaxis=False,
                                textfont=dict(color=INK, size=12),
                                hovertemplate="%{y}<br><b>%{x:,}</b> declines<extra></extra>")
-            style_chart(fig2, height=300).update_layout(bargap=0.35)
+            style_chart(fig2, height=260).update_layout(bargap=0.35)
             fig2.update_xaxes(showgrid=True, gridcolor="#EFE6D6", range=[0, d["count"].max() * 1.2])
             st.plotly_chart(fig2, width="stretch", config={"displayModeBar": False})
-    with r2c2:
-        with st.container(key="card_agent"):
-            card_title("Ask the Agent")
+
+    with st.container(key="card_agent"):
+        card_title("Ask the Agent")
+        a1, a2 = st.columns([2, 3], gap="medium")
+        with a1:
             default_q = "Analyse this merchant's payment performance, quantify the revenue impact of any decline, and give prioritised recommendations."
-            question = st.text_area("Question", value=default_q, height=80, label_visibility="collapsed")
+            question = st.text_area("Question", value=default_q, height=110, label_visibility="collapsed")
             if st.button("Run analysis", type="primary", width="stretch"):
                 with st.spinner("Agent is analysing..."):
                     answer, tool_log = run_agent(df, question)
                 st.session_state["analysis"] = {"source": source, "answer": answer, "tool_log": tool_log}
+        with a2:
             analysis = st.session_state.get("analysis")
-            with st.container(height=170, border=False):
+            with st.container(height=200, border=False):
                 if analysis and analysis["source"] == source:
                     st.markdown(analysis["answer"])
                     if analysis["tool_log"]:
@@ -666,8 +906,24 @@ else:
     with st.container(key="card_nodata"):
         card_title("Performance")
         empty_state("Upload a transaction CSV to begin",
-                    "Needs columns: date, amount, payment_method, status, decline_reason. "
-                    "Download the template above for an example.")
+                    "Needs columns: date, amount, payment_method, status, decline_reason "
+                    "(optional: card_type, network). Download the template above for an example.")
+
+# Routing Advisor defaults from the data, so both sections describe the same merchant
+def _int_split(shares):
+    vals = [int(round(v)) for v in shares]
+    vals[-1] = 100 - sum(vals[:-1])
+    return vals
+
+if debit is not None and not debit.empty and monthly_revenue:
+    _net_share = debit["network"].value_counts(normalize=True) * 100
+    adv_eftpos, adv_visa, adv_mc = _int_split([_net_share.get("Eftpos", 0), _net_share.get("Visa", 0),
+                                               _net_share.get("Mastercard", 0)])
+    adv_debit_pct = int(round(debit["amount"].sum() / n_months / monthly_revenue * 100))
+    adv_avg_debit = float(round(debit["amount"].mean(), 2))
+else:
+    adv_eftpos, adv_visa, adv_mc, adv_debit_pct = 35, 40, 25, 60
+    adv_avg_debit = float(round(atv, 2)) if atv else 45.0
 
 # ----- Row 3: routing advisor -----
 r3c1, r3c2, r3c3 = st.columns(3, gap="medium")
@@ -680,14 +936,16 @@ with r3c1:
             monthly_turnover = st.number_input("Monthly turnover ($)", min_value=0.0, step=1000.0, format="%.0f",
                                                value=float(round(monthly_revenue, -3)) if monthly_revenue else 100000.0)
             f3, f4 = st.columns(2)
-            debit_pct = f3.number_input("Dual-network debit %", min_value=0, max_value=100, value=60)
-            avg_debit_value = f4.number_input("Avg debit txn ($)", min_value=1.0,
-                                              value=float(round(atv, 2)) if atv else 45.0)
+            debit_pct = f3.number_input("Dual-network debit %", min_value=0, max_value=100, value=adv_debit_pct)
+            avg_debit_value = f4.number_input("Avg debit txn ($)", min_value=1.0, value=adv_avg_debit)
             c1, c2, c3 = st.columns(3)
-            eftpos_share_pct = c1.number_input("Eftpos %", min_value=0, max_value=100, value=35)
-            visa_share_pct = c2.number_input("Visa %", min_value=0, max_value=100, value=40)
-            mastercard_share_pct = c3.number_input("Mastercard %", min_value=0, max_value=100, value=25)
-            is_surcharging = st.checkbox("Merchant currently surcharges card payments")
+            eftpos_share_pct = c1.number_input("Eftpos %", min_value=0, max_value=100, value=adv_eftpos)
+            visa_share_pct = c2.number_input("Visa %", min_value=0, max_value=100, value=adv_visa)
+            mastercard_share_pct = c3.number_input("Mastercard %", min_value=0, max_value=100, value=adv_mc)
+            if df is None:
+                is_surcharging = st.checkbox("Merchant currently surcharges card payments")
+            else:
+                st.caption("Surcharging is set in the Surcharge Impact card.")
             submitted = st.form_submit_button("Generate recommendation", type="primary", width="stretch")
 
         total_pct = eftpos_share_pct + visa_share_pct + mastercard_share_pct
