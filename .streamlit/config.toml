@@ -1,7 +1,7 @@
 [theme]
 base="light"
-backgroundColor="#F7F5EF"
-secondaryBackgroundColor="#EDF0E4"
-textColor="#33513B"
-primaryColor="#4F7A52"
-font="sans serif"
+backgroundColor="#FBF4E6"
+secondaryBackgroundColor="#F3E7D2"
+textColor="#1D2B29"
+primaryColor="#1D4B45"
+font="Poppins:https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap"

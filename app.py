@@ -13,143 +13,182 @@ st.set_page_config(page_title="Payments Consultant", layout="wide")
 
 # ---------- THEME ----------
 
-st.markdown("""
+TEAL = "#1D4B45"
+CREAM = "#FBF4E6"
+CARD = "#FFFDF8"
+INK = "#1D2B29"
+MUTED = "#6B6A63"
+ORANGE = "#E07B0E"
+MAGENTA = "#C8338F"
+BLUE = "#3F87D4"
+BROWN = "#5A3A1E"
+# Validated categorical order for chart series (CVD-safe on the card surface).
+SERIES = [ORANGE, MAGENTA, BLUE]
+TINTS = {ORANGE: "#FBE3C6", MAGENTA: "#F5D4E8", BLUE: "#D7E7F8", BROWN: "#E9DDD0", TEAL: "#D5E3E0"}
+
+st.markdown(f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap');
 
-html, body, [class*="css"] { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+.hero, .card-pill, .stat, .donut-wrap, .highlight, .bar-row, .side-list, .site-footer, .empty-state {{
+    font-family: 'Poppins', -apple-system, BlinkMacSystemFont, sans-serif !important;
+}}
+.stApp {{ background: {CREAM}; }}
+.block-container {{ padding-top: 0 !important; padding-bottom: 5rem; max-width: 1100px; }}
+header[data-testid="stHeader"] {{ background: transparent; }}
+footer {{ visibility: hidden; }}
+h1, h2, h3, h4 {{ color: {INK} !important; letter-spacing: -0.01em; }}
 
-h1, h2, h3 { letter-spacing: -0.02em !important; font-weight: 700 !important; color: #33513B !important; }
+/* Header band */
+.hero {{
+    background: {TEAL}; color: #FFFFFF; border-radius: 0 0 32px 32px;
+    padding: 64px 32px 34px; margin: 0 0 26px; text-align: center; position: relative;
+}}
+.hero .title {{ font-size: 42px; font-weight: 800; line-height: 1.08; letter-spacing: -0.01em; }}
+.hero .subtitle {{ font-size: 15px; color: #D5E3E0; margin-top: 10px; }}
+.hero .pill {{
+    display: inline-block; margin-top: 16px; background: {ORANGE}; color: #FFFFFF;
+    border-radius: 999px; padding: 6px 18px; font-size: 13px; font-weight: 600;
+}}
 
-[data-testid="stTabs"] div[data-baseweb="tab-list"] {
-    background: #E5E9DC;
-    border-radius: 10px;
-    padding: 4px;
-    gap: 4px;
-    display: inline-flex;
-    width: fit-content;
-}
-[data-testid="stTabs"] button[data-baseweb="tab"] {
-    border-radius: 8px;
-    color: #7C8577;
-    font-weight: 500;
-    padding: 8px 18px;
-}
-[data-testid="stTabs"] button[aria-selected="true"] {
-    background: #FFFFFF;
-    color: #33513B !important;
-    font-weight: 600;
-}
-[data-baseweb="tab-highlight"] { display: none; }
-[data-baseweb="tab-border"] { display: none; }
+/* Tabs as a centred pill switcher (covers both old and new Streamlit tab markup) */
+[data-testid="stTabs"] [role="tablist"] {{
+    justify-content: center; gap: 10px; border: none !important; box-shadow: none !important; margin-bottom: 8px;
+}}
+[data-testid="stTabs"] [role="tab"] {{
+    background: {CARD}; border: 1.5px solid {TEAL} !important; border-radius: 999px;
+    padding: 6px 22px !important; color: {TEAL}; box-shadow: none !important;
+}}
+[data-testid="stTabs"] [role="tab"][aria-selected="true"] {{ background: {TEAL}; color: #FFFFFF; }}
+[data-testid="stTabs"] [role="tab"] p {{ font-weight: 600; color: inherit; }}
+[data-testid="stTabs"] [role="tab"]::after, [data-testid="stTabs"] [role="tab"]::before,
+[data-testid="stTabs"] [role="tablist"]::after, [data-testid="stTabs"] [role="tablist"]::before,
+[data-testid="stTabs"] div:has(> [role="tablist"])::after, [data-testid="stTabs"] div:has(> [role="tablist"])::before {{ display: none !important; }}
+[data-baseweb="tab-highlight"], [data-baseweb="tab-border"],
+[data-testid="stTabs"] .react-aria-SelectionIndicator {{ display: none !important; }}
 
-div[data-testid="stForm"] {
-    border: 0.5px solid #DCE1D3;
-    border-radius: 16px;
-    background: #EDF0E4;
-    padding: 1.6rem;
-}
-button[kind="primary"] {
-    background-color: #4F7A52 !important;
-    color: #FFFFFF !important;
-    border: none !important;
-    border-radius: 10px !important;
-    font-weight: 600 !important;
-}
+/* Section cards with a pill label sitting on the top border */
+[class*="st-key-card"] {{
+    background: {CARD}; border: 1.5px solid {TEAL}; border-radius: 20px;
+    padding: 34px 22px 20px; margin-top: 26px; overflow: visible;
+}}
+.card-pill {{ text-align: center; margin-top: -54px; margin-bottom: 6px; }}
+.card-pill span {{
+    display: inline-block; background: {TEAL}; color: #FFFFFF; font-weight: 600; font-size: 15px;
+    border-radius: 12px; padding: 7px 34px; min-width: 50%;
+}}
 
-.metric-tile {
-    background: #EDF0E4;
-    border-radius: 16px;
-    padding: 20px;
-}
-.metric-tile .value {
-    font-size: 30px;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-    color: #33513B;
-}
-.metric-tile .value.accent { color: #4F7A52; }
-.metric-tile .label {
-    font-size: 13px;
-    color: #7C8577;
-    margin-top: 4px;
-}
+button[kind="primary"], button[kind="primaryFormSubmit"] {{
+    background-color: {TEAL} !important; color: #FFFFFF !important; border: none !important;
+    border-radius: 12px !important; font-weight: 600 !important;
+}}
+div[data-testid="stForm"] {{ border: none; padding: 0; }}
 
-.ledger-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    padding: 10px 0;
-    border-bottom: 0.5px solid #DCE1D3;
-    font-size: 14px;
-}
-.ledger-row:last-child { border-bottom: none; }
-.ledger-row .label { color: #7C8577; }
-.metric-tile .ledger-row .value { font-size: 14px; letter-spacing: 0; font-weight: 600; color: #33513B; }
-.ledger-row .value .improved { color: #4F7A52; }
+/* Progress-bar rows */
+.bar-row {{ display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; margin: 8px 0 14px; font-size: 14px; color: {INK}; }}
+.bar-row .pct {{ font-weight: 600; }}
+.bar-track {{ grid-column: 1 / -1; height: 12px; border-radius: 999px; }}
+.bar-fill {{ height: 100%; border-radius: 999px; }}
 
-.block-container { padding-top: 3.5rem; max-width: 1200px; }
-footer { visibility: hidden; }
+/* Big stat numbers */
+.stat-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 18px 12px; text-align: center; padding: 6px 0; }}
+.stat .num {{ font-size: 34px; font-weight: 700; color: {ORANGE}; line-height: 1.1; }}
+.stat .lbl {{ font-size: 14px; color: {INK}; margin-top: 2px; }}
 
-.hero {
-    display: flex; justify-content: space-between; align-items: flex-end;
-    flex-wrap: wrap; gap: 12px; margin-bottom: 18px;
-}
-.hero .eyebrow {
-    font-size: 12px; font-weight: 600; letter-spacing: 0.08em;
-    text-transform: uppercase; color: #7C8577; margin-bottom: 6px;
-}
-.hero .title { font-size: 32px; font-weight: 700; letter-spacing: -0.02em; color: #33513B; line-height: 1.1; }
-.hero .subtitle { font-size: 15px; color: #7C8577; margin-top: 6px; }
-.pill {
-    display: inline-block; background: #E5E9DC; color: #33513B;
-    border-radius: 999px; padding: 6px 14px; font-size: 13px; font-weight: 600;
-}
-.pill .dot {
-    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-    background: #4F7A52; margin-right: 8px; vertical-align: 1px;
-}
+/* Donut rings */
+.donuts {{ display: flex; justify-content: space-around; gap: 12px; padding: 6px 0 10px; }}
+.donut-wrap {{ text-align: center; }}
+.donut {{
+    width: 110px; height: 110px; border-radius: 50%; margin: 0 auto;
+    display: flex; align-items: center; justify-content: center;
+}}
+.donut .hole {{
+    width: 78px; height: 78px; border-radius: 50%; background: {CARD};
+    display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 18px; color: {INK};
+}}
+.donut-wrap .big {{ font-weight: 700; font-size: 17px; margin-top: 8px; color: {INK}; }}
+.donut-wrap .small {{ font-size: 13px; color: {MUTED}; }}
 
-.metric-tile { height: 100%; }
-.metric-tile .sub { font-size: 12px; margin-top: 8px; color: #7C8577; }
-.metric-tile .sub.down { color: #A4502F; font-weight: 600; }
-.metric-tile .sub.up { color: #4F7A52; font-weight: 600; }
+.highlight {{
+    background: {ORANGE}; color: #FFFFFF; border-radius: 14px; padding: 12px 18px;
+    display: flex; align-items: center; justify-content: space-between; margin-top: 6px;
+}}
+.highlight .lbl {{ font-weight: 600; font-size: 15px; line-height: 1.2; }}
+.highlight .num {{ font-weight: 800; font-size: 32px; }}
 
-.section-label {
-    font-size: 12px; font-weight: 600; letter-spacing: 0.08em;
-    text-transform: uppercase; color: #7C8577; margin: 18px 0 8px;
-}
-.empty-state {
-    border: 1px dashed #C9D1BE; border-radius: 16px; padding: 48px 24px;
-    text-align: center; color: #7C8577; font-size: 14px;
-}
-.empty-state .big { font-size: 17px; font-weight: 600; color: #33513B; margin-bottom: 6px; }
+.side-list {{ display: flex; flex-direction: column; justify-content: center; gap: 18px; padding: 8px 0; }}
+.side-list .row {{ display: flex; justify-content: space-between; font-size: 14px; color: {INK}; }}
+.side-list .row b {{ font-weight: 700; }}
+
+/* Side-by-side cards stretch to equal height */
+[data-testid="stColumn"]:has(.st-key-card_growth) > [data-testid="stVerticalBlock"],
+[data-testid="stColumn"]:has(.st-key-card_metrics) > [data-testid="stVerticalBlock"] {{ height: 100%; }}
+[data-testid="stColumn"]:has(.st-key-card_growth) > [data-testid="stVerticalBlock"] > div:has(.st-key-card_growth),
+[data-testid="stColumn"]:has(.st-key-card_metrics) > [data-testid="stVerticalBlock"] > div:has(.st-key-card_metrics) {{
+    flex: 1; display: flex; flex-direction: column;
+}}
+.st-key-card_growth, .st-key-card_metrics {{ flex: 1; }}
+.st-key-card_metrics > div:last-child {{ margin-top: auto; margin-bottom: auto; }}
+
+.empty-state {{ text-align: center; color: {MUTED}; font-size: 14px; padding: 28px 12px; }}
+.empty-state .big {{ font-size: 17px; font-weight: 600; color: {INK}; margin-bottom: 6px; }}
+
+/* Footer with corner triangles */
+.site-footer {{
+    position: relative; text-align: center; font-size: 13px; font-weight: 600; color: {INK};
+    margin-top: 40px; padding: 28px 0 18px; overflow: hidden;
+}}
+.site-footer:before, .site-footer:after {{
+    content: ""; position: absolute; bottom: 0; width: 0; height: 0; border-style: solid;
+}}
+.site-footer:before {{ left: 0; border-width: 46px 0 0 46px; border-color: transparent transparent transparent {ORANGE}; }}
+.site-footer:after {{ right: 0; border-width: 0 0 46px 46px; border-color: transparent transparent {ORANGE} transparent; }}
+
+@media (max-width: 640px) {{
+    [class*="st-key-card"] [data-testid="stHorizontalBlock"] {{ gap: 0.25rem; }}
+    .hero {{ padding: 56px 18px 26px; }}
+    .hero .title {{ font-size: 32px; }}
+    .stat .num {{ font-size: 28px; }}
+    .donut {{ width: 96px; height: 96px; }}
+    .donut .hole {{ width: 68px; height: 68px; }}
+}}
 </style>
 """, unsafe_allow_html=True)
 
-GREEN_COLORWAY = ["#4F7A52", "#7FA671", "#33513B", "#A9BFA0"]
+def card_title(text):
+    st.markdown(f'<div class="card-pill"><span>{text}</span></div>', unsafe_allow_html=True)
 
-def metric_tile(value, label, accent=False, sub=None, sub_tone=None):
-    accent_class = " accent" if accent else ""
-    sub_html = f'<div class="sub {sub_tone or ""}">{sub}</div>' if sub else ""
-    st.markdown(f"""
-    <div class="metric-tile">
-        <div class="value{accent_class}">{value}</div>
-        <div class="label">{label}</div>
-        {sub_html}
-    </div>
-    """, unsafe_allow_html=True)
+def progress_rows(items):
+    """items: list of (label, pct, colour). Label and % are always shown as text."""
+    html = "".join(
+        f'<div class="bar-row"><span>{label}</span><span class="pct">{pct:.0f}%</span>'
+        f'<div class="bar-track" style="background:{TINTS.get(colour, "#EEE")}">'
+        f'<div class="bar-fill" style="width:{max(min(pct, 100), 0):.1f}%; background:{colour}"></div></div></div>'
+        for label, pct, colour in items)
+    st.markdown(html, unsafe_allow_html=True)
 
-def style_chart(fig, height=300):
+def donut_html(pct, colour, big, small):
+    p = max(min(pct, 100), 0)
+    return (f'<div class="donut-wrap"><div class="donut" style="background:conic-gradient({colour} {p}%, '
+            f'{TINTS.get(colour, "#EEE")} 0)"><div class="hole">{pct:.0f}%</div></div>'
+            f'<div class="big">{big}</div><div class="small">{small}</div></div>')
+
+def stat_grid(stats):
+    """stats: list of (value, label)."""
+    cells = "".join(f'<div class="stat"><div class="num">{v}</div><div class="lbl">{l}</div></div>' for v, l in stats)
+    st.markdown(f'<div class="stat-grid">{cells}</div>', unsafe_allow_html=True)
+
+def style_chart(fig, height=260, legend=False):
     fig.update_layout(
-        height=height, margin=dict(l=8, r=8, t=8, b=8),
+        height=height, margin=dict(l=4, r=4, t=30 if legend else 6, b=4),
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="Inter, sans-serif", color="#33513B", size=12),
-        hoverlabel=dict(bgcolor="#FFFFFF", bordercolor="#DCE1D3", font_color="#33513B"),
-        showlegend=False, xaxis_title=None, yaxis_title=None,
+        font=dict(family="Poppins, sans-serif", color=INK, size=12),
+        hoverlabel=dict(bgcolor="#FFFFFF", bordercolor=TEAL, font_color=INK),
+        showlegend=legend, legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0.5, xanchor="center", title=None),
+        xaxis_title=None, yaxis_title=None,
     )
-    fig.update_xaxes(showgrid=False, linecolor="#DCE1D3", tickfont_color="#7C8577")
-    fig.update_yaxes(gridcolor="#E5E9DC", zeroline=False, tickfont_color="#7C8577")
+    fig.update_xaxes(showgrid=False, linecolor="#D9CFBD", tickfont_color=MUTED)
+    fig.update_yaxes(gridcolor="#EFE6D6", zeroline=False, tickfont_color=MUTED)
     return fig
 
 # ---------- ONE-TIME SETUP (cached) ----------
@@ -442,12 +481,9 @@ else:
 
 st.markdown(f"""
 <div class="hero">
-    <div>
-        <div class="eyebrow">AI payments advisory</div>
-        <div class="title">Payments Consultant</div>
-        <div class="subtitle">Performance analysis and routing strategy, grounded in real calculation.</div>
-    </div>
-    <div class="pill"><span class="dot"></span>{reform_pill}</div>
+    <div class="title">Payments Consultant</div>
+    <div class="subtitle">Performance analysis and routing strategy, grounded in real calculation.</div>
+    <div class="pill">{reform_pill}</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -458,75 +494,108 @@ CSV_TEMPLATE = (
     "2026-01-01,42.50,Visa,approved,\n"
     "2026-01-01,18.00,Eftpos,declined,Insufficient Funds\n"
 )
+METHOD_COLOURS = [ORANGE, MAGENTA, BLUE, BROWN, TEAL]
 
 with tab1:
-    source = st.radio("Data source", ["Demo: Declining merchant", "Demo: Healthy merchant", "Upload CSV"],
-                      horizontal=True, label_visibility="collapsed")
-    df = None
-    if source == "Upload CSV":
-        up_col, tmpl_col = st.columns([3, 1])
-        with up_col:
-            uploaded = st.file_uploader("CSV with columns: date, amount, payment_method, status, decline_reason",
-                                        type=["csv"])
-        with tmpl_col:
-            st.write("")
-            st.download_button("Download CSV template", CSV_TEMPLATE, file_name="transactions_template.csv",
-                               mime="text/csv", width="stretch")
-        if uploaded:
-            df, error = load_uploaded_csv(uploaded)
-            if error:
-                st.error(error)
-    elif source == "Demo: Declining merchant":
-        df = generate_demo_data(seed=42, healthy=False)
-    else:
-        df = generate_demo_data(seed=99, healthy=True)
+    with st.container(key="card_source"):
+        card_title("Data Source")
+        source = st.radio("Data source", ["Demo: Declining merchant", "Demo: Healthy merchant", "Upload CSV"],
+                          horizontal=True, label_visibility="collapsed")
+        df = None
+        if source == "Upload CSV":
+            up_col, tmpl_col = st.columns([3, 1])
+            with up_col:
+                uploaded = st.file_uploader("CSV with columns: date, amount, payment_method, status, decline_reason",
+                                            type=["csv"])
+            with tmpl_col:
+                st.write("")
+                st.download_button("Download template", CSV_TEMPLATE, file_name="transactions_template.csv",
+                                   mime="text/csv", width="stretch")
+            if uploaded:
+                df, error = load_uploaded_csv(uploaded)
+                if error:
+                    st.error(error)
+            else:
+                st.markdown('<div class="empty-state">Upload a transaction CSV to begin, '
+                            'or download the template for an example.</div>', unsafe_allow_html=True)
+        elif source == "Demo: Declining merchant":
+            df = generate_demo_data(seed=42, healthy=False)
+        else:
+            df = generate_demo_data(seed=99, healthy=True)
 
     if df is not None:
         stats = build_data_summary(df)
         monthly = stats["monthly"]
         overall_rate = (df["status"] == "approved").mean() * 100
         first_rate, last_rate = monthly["approval_rate"].iloc[0], monthly["approval_rate"].iloc[-1]
+        first_label = pd.Period(monthly["month"].iloc[0]).strftime("%b %Y")
+        last_label = pd.Period(monthly["month"].iloc[-1]).strftime("%b %Y")
+        first_count, last_count = monthly["transactions"].iloc[0], monthly["transactions"].iloc[-1]
         change = last_rate - first_rate
         at_risk = max(calculate_revenue_impact(last_rate, first_rate, stats["monthly_txn_count"],
                                                stats["avg_transaction_value"])["estimated_monthly_revenue_impact"], 0)
 
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            tone = "down" if change < -0.5 else "up" if change > 0.5 else None
-            metric_tile(f"{overall_rate:.1f}%", "Approval rate", accent=True,
-                        sub=f"{change:+.1f} pts since {pd.Period(monthly['month'].iloc[0]).strftime('%b %Y')}", sub_tone=tone)
-        with c2: metric_tile(f"${stats['avg_transaction_value']:.0f}", "Avg transaction")
-        with c3: metric_tile(f"{stats['monthly_txn_count']:,.0f}", "Monthly transactions")
-        with c4: metric_tile(f"${at_risk:,.0f}", "Est. revenue lost / month",
-                             sub="vs. first month's approval rate")
-
-        st.markdown('<div class="section-label">Trends</div>', unsafe_allow_html=True)
-        cc1, cc2 = st.columns(2)
-        with cc1:
-            with st.container(border=True):
-                st.markdown("**Approval rate by month**")
-                fig = px.line(monthly, x="month", y="approval_rate", markers=True,
-                              color_discrete_sequence=GREEN_COLORWAY)
-                fig.update_traces(line_width=2, marker_size=8,
+        # Payment method overview: approval-rate bars + monthly trend
+        with st.container(key="card_overview"):
+            card_title("Payment Method Overview")
+            left, right = st.columns([2, 3], gap="medium")
+            with left:
+                methods = stats["methods"].sort_values(ascending=False)
+                progress_rows([(m, v, METHOD_COLOURS[i % len(METHOD_COLOURS)])
+                               for i, (m, v) in enumerate(methods.items())])
+                st.caption("Approval rate by payment method")
+            with right:
+                fig = px.area(monthly, x="month", y="approval_rate", markers=True,
+                              color_discrete_sequence=[ORANGE])
+                fig.update_traces(line_width=2, marker_size=8, fillcolor="rgba(224,123,14,0.25)",
                                   hovertemplate="%{x}<br><b>%{y:.1f}%</b> approved<extra></extra>")
-                style_chart(fig).update_yaxes(ticksuffix="%")
+                style_chart(fig).update_yaxes(ticksuffix="%", range=[max(monthly["approval_rate"].min() - 3, 0), 100])
+                fig.update_xaxes(tickvals=monthly["month"],
+                                 ticktext=[pd.Period(m).strftime("%b") for m in monthly["month"]])
                 st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
-        with cc2:
-            with st.container(border=True):
-                st.markdown("**Decline reasons**")
-                declines = stats["declines"].sort_values().reset_index()
-                declines.columns = ["reason", "count"]
-                fig2 = px.bar(declines, x="count", y="reason", orientation="h",
-                              color_discrete_sequence=GREEN_COLORWAY)
-                fig2.update_traces(marker_line_width=0,
-                                   hovertemplate="%{y}<br><b>%{x:,}</b> declines<extra></extra>")
-                style_chart(fig2).update_layout(bargap=0.35)
-                fig2.update_xaxes(showgrid=True, gridcolor="#E5E9DC")
-                fig2.update_yaxes(showgrid=False)
-                st.plotly_chart(fig2, width="stretch", config={"displayModeBar": False})
+                st.caption("Approval rate by month")
 
-        st.markdown('<div class="section-label">Ask the agent</div>', unsafe_allow_html=True)
-        with st.container(border=True):
+        c1, c2 = st.columns(2, gap="medium")
+        with c1:
+            with st.container(key="card_growth"):
+                card_title("Approval Change")
+                st.markdown('<div class="donuts">'
+                            + donut_html(first_rate, MAGENTA, f"{first_count:,.0f}", f"txns · {first_label}")
+                            + donut_html(last_rate, BLUE, f"{last_count:,.0f}", f"txns · {last_label}")
+                            + '</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="highlight"><span class="lbl">Change in<br>approval rate:</span>'
+                            f'<span class="num">{change:+.1f} pts</span></div>', unsafe_allow_html=True)
+        with c2:
+            with st.container(key="card_metrics"):
+                card_title("Key Metrics")
+                stat_grid([
+                    (f"{overall_rate:.1f}%", "Approval rate"),
+                    (f"${stats['avg_transaction_value']:.0f}", "Avg transaction"),
+                    (f"{stats['monthly_txn_count']/1000:.1f}k", "Monthly txns"),
+                    (f"${at_risk/1000:,.0f}k" if at_risk >= 1000 else f"${at_risk:,.0f}", "Revenue lost / mo"),
+                ])
+
+        # Decline reasons: horizontal bars + share list
+        with st.container(key="card_declines"):
+            card_title("Decline Reasons")
+            left, right = st.columns([3, 2], gap="medium")
+            declines = stats["declines"]
+            with left:
+                d = declines.sort_values().reset_index()
+                d.columns = ["reason", "count"]
+                fig2 = px.bar(d, x="count", y="reason", orientation="h", color_discrete_sequence=[ORANGE])
+                fig2.update_traces(marker_line_width=0, hovertemplate="%{y}<br><b>%{x:,}</b> declines<extra></extra>")
+                style_chart(fig2, height=240).update_layout(bargap=0.4)
+                fig2.update_xaxes(showgrid=True, gridcolor="#EFE6D6")
+                st.plotly_chart(fig2, width="stretch", config={"displayModeBar": False})
+            with right:
+                shares = (declines / declines.sum() * 100) if declines.sum() else declines
+                rows = "".join(f'<div class="row"><span>{r}</span><b>{v:.0f}%</b></div>'
+                               for r, v in shares.head(3).items())
+                st.markdown(f'<div class="side-list">{rows}</div>', unsafe_allow_html=True)
+
+        with st.container(key="card_agent"):
+            card_title("Ask the Agent")
             default_q = "Analyse this merchant's payment performance, quantify the revenue impact of any decline, and give prioritised recommendations."
             question = st.text_area("Question", value=default_q, height=90, label_visibility="collapsed")
             if st.button("Run analysis", type="primary"):
@@ -534,87 +603,100 @@ with tab1:
                     answer, tool_log = run_agent(df, question)
                 st.session_state["analysis"] = {"source": source, "answer": answer, "tool_log": tool_log}
 
-        analysis = st.session_state.get("analysis")
-        if analysis and analysis["source"] == source:
-            with st.container(border=True):
+            analysis = st.session_state.get("analysis")
+            if analysis and analysis["source"] == source:
+                st.divider()
                 st.markdown(analysis["answer"])
                 if analysis["tool_log"]:
                     with st.expander(f"How this was calculated ({len(analysis['tool_log'])} tool calls)"):
                         for t in analysis["tool_log"]:
                             st.code(t)
-    elif source == "Upload CSV":
-        st.markdown("""
-        <div class="empty-state">
-            <div class="big">Upload a transaction CSV to begin</div>
-            Needs columns: date, amount, payment_method, status, decline_reason.
-            Download the template above for an example.
-        </div>""", unsafe_allow_html=True)
 
 with tab2:
-    st.markdown("**Post-reform routing check** — will this merchant's debit routing mix across eftpos, "
-                "Visa and Mastercard still be cost-optimal after the 1 October 2026 RBA reform?")
-
-    form_col, result_col = st.columns([5, 7], gap="large")
+    form_col, result_col = st.columns([5, 7], gap="medium")
 
     with form_col:
-        with st.form("routing_form"):
-            merchant_name = st.text_input("Merchant name", value="Merchant A")
-            monthly_turnover = st.number_input("Monthly card turnover ($)", min_value=0.0, value=100000.0, step=1000.0)
-            debit_pct = st.slider("% of turnover that is dual-network debit", 0, 100, 60)
-            avg_debit_value = st.number_input("Average debit transaction ($)", min_value=1.0, value=45.0)
+        with st.container(key="card_merchant"):
+            card_title("Merchant Details")
+            with st.form("routing_form", border=False):
+                merchant_name = st.text_input("Merchant name", value="Merchant A")
+                monthly_turnover = st.number_input("Monthly card turnover ($)", min_value=0.0, value=100000.0, step=1000.0)
+                debit_pct = st.slider("% of turnover that is dual-network debit", 0, 100, 60)
+                avg_debit_value = st.number_input("Average debit transaction ($)", min_value=1.0, value=45.0)
 
-            st.markdown("**Current debit routing split**")
-            c1, c2, c3 = st.columns(3)
-            eftpos_share_pct = c1.number_input("Eftpos %", min_value=0, max_value=100, value=35)
-            visa_share_pct = c2.number_input("Visa %", min_value=0, max_value=100, value=40)
-            mastercard_share_pct = c3.number_input("Mastercard %", min_value=0, max_value=100, value=25)
+                st.markdown("**Current debit routing split**")
+                c1, c2, c3 = st.columns(3)
+                eftpos_share_pct = c1.number_input("Eftpos %", min_value=0, max_value=100, value=35)
+                visa_share_pct = c2.number_input("Visa %", min_value=0, max_value=100, value=40)
+                mastercard_share_pct = c3.number_input("Mastercard %", min_value=0, max_value=100, value=25)
 
-            is_surcharging = st.checkbox("Merchant currently surcharges card payments")
-            submitted = st.form_submit_button("Generate recommendation", type="primary", width="stretch")
+                is_surcharging = st.checkbox("Merchant currently surcharges card payments")
+                submitted = st.form_submit_button("Generate recommendation", type="primary", width="stretch")
 
-    total_pct = eftpos_share_pct + visa_share_pct + mastercard_share_pct
-    if submitted:
-        if total_pct != 100:
-            with form_col:
+            total_pct = eftpos_share_pct + visa_share_pct + mastercard_share_pct
+            if submitted and total_pct != 100:
                 st.error(f"Routing split adds up to {total_pct}%, not 100%. Please adjust and resubmit.")
-        else:
-            with result_col:
-                with st.spinner("Calculating and drafting recommendation..."):
-                    routing_result, recommendation = run_routing_advisor(
-                        merchant_name, monthly_turnover, debit_pct, avg_debit_value,
-                        eftpos_share_pct, visa_share_pct, mastercard_share_pct, is_surcharging
-                    )
-            st.session_state["routing"] = {"merchant": merchant_name, "result": routing_result,
-                                           "recommendation": recommendation}
+
+    if submitted and total_pct == 100:
+        with result_col:
+            with st.spinner("Calculating and drafting recommendation..."):
+                routing_result, recommendation = run_routing_advisor(
+                    merchant_name, monthly_turnover, debit_pct, avg_debit_value,
+                    eftpos_share_pct, visa_share_pct, mastercard_share_pct, is_surcharging
+                )
+        st.session_state["routing"] = {
+            "merchant": merchant_name, "result": routing_result, "recommendation": recommendation,
+            "split": {"Eftpos": eftpos_share_pct, "Visa debit": visa_share_pct, "Mastercard debit": mastercard_share_pct},
+        }
 
     with result_col:
         routing = st.session_state.get("routing")
         if not routing:
-            st.markdown("""
-            <div class="empty-state">
-                <div class="big">No recommendation yet</div>
-                Enter the merchant's details and routing split, then generate a recommendation.
-            </div>""", unsafe_allow_html=True)
+            with st.container(key="card_routing_empty"):
+                card_title("Routing Costs")
+                st.markdown("""
+                <div class="empty-state">
+                    <div class="big">No recommendation yet</div>
+                    Enter the merchant's details and routing split, then generate a recommendation.
+                </div>""", unsafe_allow_html=True)
         else:
             r = routing["result"]
-            st.markdown(f"#### {routing['merchant']}")
-            c1, c2, c3 = st.columns(3)
-            with c1: metric_tile(f"${r['monthly_cost_current_routing_before_reform']:,.0f}", "Monthly cost today")
-            with c2: metric_tile(f"${r['monthly_cost_current_routing_after_reform']:,.0f}", "Cost post-reform")
-            with c3: metric_tile(f"${r['monthly_savings_available_after_reform']:,.0f}", "Saving via eftpos routing",
-                                 accent=True)
+            with st.container(key="card_routing_costs"):
+                card_title(f"Routing Costs · {routing['merchant']}")
+                stat_grid([
+                    (f"${r['monthly_cost_current_routing_before_reform']:,.0f}", "Monthly cost today"),
+                    (f"${r['monthly_cost_current_routing_after_reform']:,.0f}", "Cost post-reform"),
+                ])
+                st.markdown(f'<div class="highlight"><span class="lbl">Post-reform saving<br>via eftpos routing:</span>'
+                            f'<span class="num">${r["monthly_savings_available_after_reform"]:,.0f}/mo</span></div>',
+                            unsafe_allow_html=True)
 
-            st.write("")
-            b, a = r["breakdown_before_reform"], r["breakdown_after_reform"]
-            rows_html = "".join([
-                f'<div class="ledger-row"><span class="label">{scheme}</span>'
-                f'<span class="value">${b[key]:,.0f} → <span class="improved">${a[key]:,.0f}</span></span></div>'
-                for scheme, key in [("Eftpos", "eftpos"), ("Visa debit", "visa_debit"), ("Mastercard debit", "mastercard_debit")]
-            ])
-            st.markdown(f'<div class="metric-tile"><div style="font-weight:600; margin-bottom:8px;">'
-                        f'Monthly routing cost by scheme <span style="font-weight:400; color:#7C8577;">'
-                        f'(today → post-reform)</span></div>{rows_html}</div>', unsafe_allow_html=True)
+            with st.container(key="card_routing_scheme"):
+                card_title("Cost by Scheme")
+                left, right = st.columns([2, 3], gap="medium")
+                schemes = [("Eftpos", "eftpos"), ("Visa debit", "visa_debit"), ("Mastercard debit", "mastercard_debit")]
+                with left:
+                    split = routing.get("split", {})
+                    rows = "".join(f'<div class="row"><span>{name}</span><b>{split.get(name, 0):.0f}%</b></div>'
+                                   for name, _ in schemes)
+                    st.markdown(f'<div class="side-list">{rows}</div>', unsafe_allow_html=True)
+                    st.caption("Current routing split")
+                with right:
+                    b, a = r["breakdown_before_reform"], r["breakdown_after_reform"]
+                    cost_df = pd.DataFrame(
+                        [{"period": p, "scheme": name, "cost": src[key]}
+                         for p, src in [("Today", b), ("Post-reform", a)] for name, key in schemes])
+                    fig3 = px.bar(cost_df, x="period", y="cost", color="scheme", color_discrete_sequence=SERIES,
+                                  category_orders={"scheme": [n for n, _ in schemes]})
+                    fig3.update_traces(marker_line_color=CARD, marker_line_width=2,
+                                       hovertemplate="%{fullData.name}<br><b>$%{y:,.0f}</b>/mo<extra></extra>")
+                    style_chart(fig3, height=260, legend=True).update_layout(bargap=0.45)
+                    fig3.update_yaxes(tickprefix="$")
+                    st.plotly_chart(fig3, width="stretch", config={"displayModeBar": False})
 
-            st.write("")
-            with st.container(border=True):
+            with st.container(key="card_recommendation"):
+                card_title("Recommendation")
                 st.markdown(routing["recommendation"])
+
+st.markdown('<div class="site-footer">Payments Consultant · analysis grounded in real calculation</div>',
+            unsafe_allow_html=True)
