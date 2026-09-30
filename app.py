@@ -445,8 +445,12 @@ def _describe_api_error(e):
         return "The app's Anthropic API key was rejected - check ANTHROPIC_API_KEY in the app's secrets."
     if isinstance(e, anthropic.RateLimitError):
         return "Too many requests right now - please try again in a minute."
+    if isinstance(e, anthropic.APITimeoutError):
+        return "The request to the AI service timed out - please try again."
     if isinstance(e, anthropic.APIConnectionError):
-        return "Couldn't reach the AI service - please try again."
+        cause = e.__cause__
+        return ("Couldn't reach the AI service"
+                + (f" ({type(cause).__name__}: {str(cause)[:120]})" if cause else "") + " - please try again.")
     if isinstance(e, anthropic.APIStatusError):
         detail = ""
         if isinstance(e.body, dict):
@@ -471,8 +475,10 @@ def extract_invoice(pdf_bytes):
     client = get_client()
     document = {"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
                                                "data": base64.standard_b64encode(pdf_bytes).decode("utf-8")}}
+    # Streamed, so bytes keep flowing while Claude reads the PDF - a long silent request can be cut off by
+    # the hosting platform's network before the reply arrives.
     try:
-        response = client.beta.messages.create(
+        with client.beta.messages.stream(
             model=INVOICE_MODEL,
             max_tokens=16000,
             betas=["server-side-fallback-2026-07-01"],
@@ -480,18 +486,22 @@ def extract_invoice(pdf_bytes):
             output_config={"effort": "low",     # simple extraction: low effort keeps it quick
                            "format": {"type": "json_schema", "schema": INVOICE_SCHEMA}},
             messages=[{"role": "user", "content": [document, {"type": "text", "text": INVOICE_PROMPT}]}],
-        )
-    except (TypeError, anthropic.NotFoundError, anthropic.PermissionDeniedError, anthropic.BadRequestError):
-        # An older SDK on the server (TypeError on the newer parameters), or an API key without access to this
-        # model or beta: fall back to a plain request on the model the app already uses, asking for JSON in text.
+        ) as stream:
+            response = stream.get_final_message()
+    except (TypeError, anthropic.NotFoundError, anthropic.PermissionDeniedError, anthropic.BadRequestError,
+            anthropic.APIConnectionError, anthropic.InternalServerError):
+        # An older SDK on the server (TypeError on the newer parameters), an API key without access to this
+        # model or beta, or a dropped connection: retry as a plain request on the model the app already uses,
+        # asking for JSON in the text reply.
         try:
-            response = client.messages.create(
+            with client.messages.stream(
                 model=INVOICE_FALLBACK_MODEL,
                 max_tokens=16000,
                 messages=[{"role": "user", "content": [document, {"type": "text", "text": (
                     INVOICE_PROMPT + "\n\nReply with only a JSON object matching this JSON schema, no other text:\n"
                     + json.dumps(INVOICE_SCHEMA))}]}],
-            )
+            ) as stream:
+                response = stream.get_final_message()
         except anthropic.APIError as e:
             raise InvoiceError(_describe_api_error(e)) from e
     except anthropic.APIError as e:
