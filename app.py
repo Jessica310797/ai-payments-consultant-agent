@@ -1,5 +1,6 @@
 
 import json
+import hashlib
 import base64
 from pathlib import Path
 from datetime import date
@@ -9,6 +10,7 @@ import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import anthropic
 from anthropic import Anthropic
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -142,6 +144,18 @@ div[data-testid="stForm"] {{ border: none; padding: 0; }}
 }}
 [data-testid="stExpandSidebarButton"] *, [data-testid="stSidebarCollapsedControl"] button * {{ color: #FFFFFF !important; }}
 .ledger {{ color: #FFFFFF; padding: 4px 4px 0; }}
+.ledger-upload {{ font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    color: #D5E3E0; border-top: 1px solid rgba(255,255,255,0.18); padding-top: 16px; margin: 8px 4px 0; }}
+[data-testid="stSidebar"] [data-testid="stFileUploader"] label p,
+[data-testid="stSidebar"] [data-testid="stFileUploader"] small,
+[data-testid="stSidebar"] [data-testid="stFileUploaderFileName"] {{ color: #FFFFFF !important; }}
+[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {{
+    background: rgba(255,255,255,0.08); border: 1px dashed rgba(255,255,255,0.45); color: #FFFFFF;
+}}
+[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] * {{ color: #FFFFFF; }}
+[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button {{
+    background: {ORANGE}; border: none; color: #FFFFFF;
+}}
 .ledger .head {{ font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #D5E3E0; }}
 .ledger .merchant {{ font-size: 20px; font-weight: 700; margin: 2px 0 14px; }}
 .ledger .item {{ padding: 16px 0; border-top: 1px solid rgba(255,255,255,0.18); }}
@@ -256,10 +270,20 @@ DEFAULT_FEES = {
     "Other":      [0.50, 0.0, 0.10, 0.30, 5.0],
 }
 
-def default_fee_table(methods):
+def default_fee_table(methods, overrides=None):
+    """One row per payment method. `overrides` (scheme -> rates from an invoice) replace the illustrative
+    defaults; a missing rate in an override keeps the default."""
+    overrides = overrides or {}
     names = list(dict.fromkeys(list(methods) + ["Other"]))
-    rows = [[m] + DEFAULT_FEES.get(m, DEFAULT_FEES["Other"]) for m in names]
-    return pd.DataFrame(rows, columns=["Payment method"] + FEE_COLUMNS)
+    rows = []
+    for m in names:
+        base = DEFAULT_FEES.get(m, DEFAULT_FEES["Other"])
+        if m in overrides:
+            vals = [round(o, 4) if o is not None else b for o, b in zip(overrides[m], base)]
+            rows.append([m, "Invoice"] + vals)
+        else:
+            rows.append([m, "Assumed"] + base)
+    return pd.DataFrame(rows, columns=["Payment method", "Source"] + FEE_COLUMNS)
 
 def compute_fees(df, fee_table, n_months):
     """Monthly interchange, scheme and acquiring/processing fees on approved transactions."""
@@ -351,6 +375,144 @@ def retrieve_relevant_docs(query, top_k=2):
     similarities = cosine_similarity(vectorizer.transform([query]), doc_matrix)[0]
     top_indices = similarities.argsort()[::-1][:top_k]
     return [{"title": documents[i]["title"], "text": documents[i]["text"]} for i in top_indices]
+
+# ---------- INVOICE / STATEMENT PDF EXTRACTION ----------
+
+INVOICE_MODEL = "claude-opus-5-5"
+MAX_PDF_BYTES = 30 * 1024 * 1024        # API request limit is 32 MB including the base64 overhead headroom
+_NUM = {"anyOf": [{"type": "number"}, {"type": "null"}]}
+_STR = {"anyOf": [{"type": "string"}, {"type": "null"}]}
+_SCHEME_LINE = {
+    "type": "object",
+    "properties": {
+        "scheme": {"type": "string", "enum": ["Visa", "Mastercard", "Eftpos", "Amex", "Other"]},
+        "card_type": {"type": "string", "enum": ["debit", "credit", "all"]},
+        "value": _NUM, "transactions": _NUM,
+        "interchange_pct": _NUM, "interchange_cents": _NUM, "scheme_fee_pct": _NUM,
+        "acquiring_pct": _NUM, "processing_cents": _NUM,
+        "interchange_amount": _NUM, "scheme_fee_amount": _NUM, "acquiring_amount": _NUM, "total_fees_amount": _NUM,
+    },
+    "required": ["scheme", "card_type", "value", "transactions", "interchange_pct", "interchange_cents",
+                 "scheme_fee_pct", "acquiring_pct", "processing_cents", "interchange_amount",
+                 "scheme_fee_amount", "acquiring_amount", "total_fees_amount"],
+    "additionalProperties": False,
+}
+INVOICE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "is_card_fee_document": {"type": "boolean"},
+        "merchant_name": _STR, "acquirer": _STR, "period_start": _STR, "period_end": _STR, "currency": _STR,
+        "pricing_model": {"type": "string", "enum": ["interchange_plus_plus", "blended", "unknown"]},
+        "total_card_value": _NUM, "total_transactions": _NUM, "total_fees": _NUM,
+        "interchange_fees": _NUM, "scheme_fees": _NUM, "acquiring_fees": _NUM, "other_fees": _NUM,
+        "schemes": {"type": "array", "items": _SCHEME_LINE},
+        "notes": {"type": "string"},
+    },
+    "required": ["is_card_fee_document", "merchant_name", "acquirer", "period_start", "period_end", "currency",
+                 "pricing_model", "total_card_value", "total_transactions", "total_fees", "interchange_fees",
+                 "scheme_fees", "acquiring_fees", "other_fees", "schemes", "notes"],
+    "additionalProperties": False,
+}
+INVOICE_PROMPT = """This PDF is a merchant's card-acceptance invoice or statement from their acquirer or payment \
+provider (for example in Australia: a bank, Tyro, Square, Stripe or similar).
+
+Extract the fees into the JSON schema:
+- Set is_card_fee_document to false if this isn't a card fee invoice or statement, and leave the rest null/empty.
+- Amounts are in the statement currency, excluding GST where the document separates it. Dates as YYYY-MM-DD.
+- pricing_model: "interchange_plus_plus" if interchange and scheme fees are itemised separately from the \
+acquirer's margin; "blended" if each card type has a single merchant service fee (MSF) rate; else "unknown".
+- schemes: one line per scheme and card type the document breaks out (use card_type "all" when it doesn't split \
+debit and credit). Map eftpos / EFTPOS / CHQ / SAV to Eftpos. Wallets such as Apple Pay belong to the card's scheme.
+  * Rates as percentages (0.5 means 0.5%) and per-transaction fees in cents (5 means 5c).
+  * For blended pricing, put the MSF rate in acquiring_pct and its fixed per-transaction fee in processing_cents.
+  * Terminal rental, chargeback and other non-transaction fees go in other_fees, not in scheme lines.
+- Use null for anything the document doesn't state. Never estimate or invent a figure.
+- notes: one or two short sentences on anything a consultant should know (e.g. figures that look inconsistent, \
+fees you couldn't place)."""
+
+class InvoiceError(Exception):
+    pass
+
+@st.cache_data(show_spinner=False, max_entries=20)
+def extract_invoice(pdf_bytes):
+    """Read an acquirer invoice/statement PDF with Claude and return the fee data as a dict.
+    Cached on the file's bytes, so each invoice is only sent once."""
+    try:
+        response = get_client().beta.messages.create(
+            model=INVOICE_MODEL,
+            max_tokens=16000,
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",    # if a safety classifier declines, re-run on Anthropic's recommended fallback
+            output_config={"effort": "medium",
+                           "format": {"type": "json_schema", "schema": INVOICE_SCHEMA}},
+            messages=[{"role": "user", "content": [
+                {"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
+                                                "data": base64.standard_b64encode(pdf_bytes).decode("utf-8")}},
+                {"type": "text", "text": INVOICE_PROMPT},
+            ]}],
+        )
+    except anthropic.BadRequestError as e:
+        raise InvoiceError("The PDF couldn't be read. Is it a valid, unencrypted PDF under 100 pages?") from e
+    except anthropic.AuthenticationError as e:
+        raise InvoiceError("The app's Anthropic API key was rejected.") from e
+    except anthropic.RateLimitError as e:
+        raise InvoiceError("Too many requests right now - please try again in a minute.") from e
+    except anthropic.APIStatusError as e:
+        raise InvoiceError(f"The AI service returned an error ({e.status_code}). Please try again.") from e
+    except anthropic.APIConnectionError as e:
+        raise InvoiceError("Couldn't reach the AI service. Check the connection and try again.") from e
+    if response.stop_reason == "refusal":
+        raise InvoiceError("The document couldn't be processed.")
+    if response.stop_reason == "max_tokens":
+        raise InvoiceError("The invoice is too long to extract in one go - try uploading fewer pages.")
+    text = next((b.text for b in response.content if b.type == "text"), None)
+    if not text:
+        raise InvoiceError("No fee data came back from the document.")
+    return json.loads(text)
+
+def _weighted(lines, field, weight):
+    vals = [(l[field], l.get(weight) or 0) for l in lines if l.get(field) is not None]
+    if not vals:
+        return None
+    total_w = sum(w for _, w in vals)
+    return sum(v * w for v, w in vals) / total_w if total_w else sum(v for v, _ in vals) / len(vals)
+
+def invoice_rates(invoice):
+    """Per-scheme rates (FEE_COLUMNS order) derived from an extracted invoice: stated rates first,
+    otherwise fee amount / value. Blended MSF goes under Acquiring, with interchange/scheme at 0."""
+    blended = invoice.get("pricing_model") == "blended"
+    rates = {}
+    for scheme in ["Visa", "Mastercard", "Eftpos", "Amex"]:
+        lines = [l for l in invoice.get("schemes", []) if l["scheme"] == scheme]
+        if not lines:
+            continue
+        value = sum(l["value"] or 0 for l in lines)
+        def pct(rate_field, amount_field):
+            r = _weighted(lines, rate_field, "value")
+            if r is None and value:
+                amounts = [l[amount_field] for l in lines if l[amount_field] is not None]
+                r = sum(amounts) / value * 100 if amounts else None
+            return r
+        ic, sf, aq = pct("interchange_pct", "interchange_amount"), pct("scheme_fee_pct", "scheme_fee_amount"), \
+            pct("acquiring_pct", "acquiring_amount")
+        if blended and aq is None and value:
+            totals = [l["total_fees_amount"] for l in lines if l["total_fees_amount"] is not None]
+            aq = sum(totals) / value * 100 if totals else None
+        ic_c = _weighted(lines, "interchange_cents", "transactions")
+        pr_c = _weighted(lines, "processing_cents", "transactions")
+        row = [ic, ic_c, sf, aq, pr_c]
+        if all(v is None for v in row):
+            continue
+        # Once the invoice states any part of a fee (its % or its cents), the other part is 0, not the default -
+        # e.g. an acquiring rate derived from a dollar amount already includes any per-transaction charge.
+        if ic is not None or ic_c is not None:
+            row[0], row[1] = ic or 0.0, ic_c or 0.0
+        if aq is not None or pr_c is not None:
+            row[3], row[4] = aq or 0.0, pr_c or 0.0
+        if blended:
+            row = [0.0 if v is None else v for v in row]
+        rates[scheme] = row
+    return rates
 
 # ---------- MODE 1 TOOLS ----------
 
@@ -744,7 +906,13 @@ else:
 source_names = {"Demo: Declining merchant": "Declining demo", "Demo: Healthy merchant": "Healthy demo",
                 "Upload CSV": "Uploaded data"}
 
-def build_ledger_items(fees, overall_rate=None, at_risk=0):
+def build_ledger_items(fees, overall_rate=None, at_risk=0, invoice=None):
+    inv_line = ""
+    if invoice and invoice.get("total_fees") is not None:
+        rate = (f' · {invoice["total_fees"] / invoice["total_card_value"] * 100:.2f}%'
+                if invoice.get("total_card_value") else "")
+        inv_line = (f'<div class="brk rate"><span>Invoice actual</span>'
+                    f'<span>{fmt_money(invoice["total_fees"])}{rate}</span></div>')
     return [
         ("Revenue", fmt_money(monthly_revenue) if monthly_revenue is not None else "—", "/ mo",
          "Approved card sales" + (f" · est. {fmt_money(at_risk)} lost to declines" if at_risk > 0 else "")),
@@ -756,8 +924,9 @@ def build_ledger_items(fees, overall_rate=None, at_risk=0):
           f'<div class="brk"><span>Scheme fees</span><span>{fmt_money(fees["scheme"])}</span></div>'
           f'<div class="brk"><span>Acquiring / processing</span><span>{fmt_money(fees["acquiring"])}</span></div>'
           f'<div class="brk rate"><span>Effective rate</span><span>'
-          f'{(fees["total"] / monthly_revenue * 100 if monthly_revenue else 0):.2f}% of revenue</span></div>')
-         if fees else ("Calculating…" if df is not None else "Load merchant data to estimate fees")),
+          f'{(fees["total"] / monthly_revenue * 100 if monthly_revenue else 0):.2f}% of revenue</span></div>'
+          + inv_line)
+         if fees else ("Calculating…" if df is not None else "Load merchant data to estimate fees") + inv_line),
     ]
 
 # Sidebar ledger is drawn straight away so it's always there, then refreshed at the end with fees
@@ -765,6 +934,30 @@ ledger_slot = st.sidebar.empty()
 ledger_slot.markdown(ledger_html(source_names.get(source, source),
                                  build_ledger_items(None, (df["status"] == "approved").mean() * 100
                                                     if df is not None else None)), unsafe_allow_html=True)
+
+# Invoice / statement PDF upload (sidebar, under the ledger): Claude reads the fees out of it
+with st.sidebar:
+    st.markdown('<div class="ledger-upload">Actual fees</div>', unsafe_allow_html=True)
+    invoice_pdf = st.file_uploader("Upload an invoice or merchant statement (PDF)", type=["pdf"], key="invoice_pdf")
+invoice, invoice_key = None, "none"
+if invoice_pdf is not None:
+    pdf_bytes = invoice_pdf.getvalue()
+    if len(pdf_bytes) > MAX_PDF_BYTES:
+        st.sidebar.error("That PDF is over 30 MB - please upload a smaller file.")
+    else:
+        try:
+            with st.sidebar, st.spinner("Reading invoice…"):
+                invoice = extract_invoice(pdf_bytes)
+        except InvoiceError as e:
+            st.sidebar.error(str(e))
+        except Exception as e:   # e.g. no API key configured in the app's secrets
+            st.sidebar.error(f"Invoice reading isn't available right now ({type(e).__name__}).")
+        if invoice is not None and not invoice.get("is_card_fee_document"):
+            st.sidebar.warning("This doesn't look like a card fee invoice or statement.")
+            invoice = None
+        if invoice is not None:
+            invoice_key = hashlib.sha1(pdf_bytes).hexdigest()[:12]
+invoice_overrides = invoice_rates(invoice) if invoice else {}
 
 # ----- Rows 1-3: payment mix, routing, performance -----
 is_surcharging, surcharge_rate = False, 0.0
@@ -1047,17 +1240,58 @@ with r3c3:
             else:
                 st.caption("The consultant's written recommendation will appear here.")
 
-# ----- Row 4: fee assumptions (drive Total cost in the ledger) -----
+# ----- Row 4: invoice actuals (when a PDF has been uploaded) -----
+if invoice:
+    with st.container(key="card_invoice"):
+        card_title(f"Invoice · {invoice.get('acquirer') or invoice_pdf.name}")
+        v1, v2, v3 = st.columns([2, 3, 3], gap="large", vertical_alignment="center")
+        period = " – ".join(p for p in [invoice.get("period_start"), invoice.get("period_end")] if p) or "not stated"
+        pricing = {"interchange_plus_plus": "Interchange++ (itemised)", "blended": "Blended MSF",
+                   "unknown": "Not clear"}[invoice.get("pricing_model", "unknown")]
+        with v1:
+            st.markdown(
+                f'<div class="impact"><div class="line"><span>Merchant</span><b>{invoice.get("merchant_name") or "—"}</b></div>'
+                f'<div class="line"><span>Period</span><b>{period}</b></div>'
+                f'<div class="line"><span>Pricing</span><b>{pricing}</b></div>'
+                f'<div class="line"><span>Card sales</span><b>'
+                f'{fmt_money(invoice["total_card_value"]) if invoice.get("total_card_value") is not None else "—"}'
+                f'</b></div></div>', unsafe_allow_html=True)
+        with v2:
+            def _amt(key):
+                return fmt_money(invoice[key]) if invoice.get(key) is not None else "—"
+            st.markdown(
+                f'<div class="impact">'
+                f'<div class="line"><span>Interchange</span><span>{_amt("interchange_fees")}</span></div>'
+                f'<div class="line"><span>Scheme fees</span><span>{_amt("scheme_fees")}</span></div>'
+                f'<div class="line"><span>Acquiring / processing</span><span>{_amt("acquiring_fees")}</span></div>'
+                f'<div class="line"><span>Other (terminals, chargebacks…)</span><span>{_amt("other_fees")}</span></div>'
+                f'<div class="line"><span><b>Total fees</b></span><b>{_amt("total_fees")}</b></div></div>',
+                unsafe_allow_html=True)
+        with v3:
+            if invoice.get("total_fees") is not None and invoice.get("total_card_value"):
+                st.markdown(f'<div class="highlight"><span class="lbl">Effective<br>rate:</span>'
+                            f'<span class="num">{invoice["total_fees"] / invoice["total_card_value"] * 100:.2f}%</span>'
+                            f'</div>', unsafe_allow_html=True)
+            applied = ", ".join(invoice_overrides) or "none"
+            st.markdown(f'<div class="route-note">Rates applied to the fee table: {applied}.'
+                        + (f' {invoice["notes"]}' if invoice.get("notes") else "") + '</div>',
+                        unsafe_allow_html=True)
+
+# ----- Row 5: fee assumptions (drive Total cost in the ledger) -----
 fees = None
 if df is not None:
     with st.container(key="card_fees"):
         card_title("Fee Assumptions")
-        st.caption("Rates used to estimate monthly fees on approved transactions. Starting values are illustrative - "
-                   "replace them with the merchant's actual pricing. % applies to transaction value, ¢ per transaction. "
-                   "Unlisted payment methods use the 'Other' row.")
+        st.caption("Rates used to estimate monthly fees on approved transactions. "
+                   + ("Rows marked 'Invoice' come from the uploaded invoice; the rest are illustrative. "
+                      if invoice_overrides else
+                      "Starting values are illustrative - upload an invoice in the sidebar or edit them to match the "
+                      "merchant's actual pricing. ")
+                   + "% applies to transaction value, ¢ per transaction. Unlisted payment methods use the 'Other' row.")
         fee_table = st.data_editor(
-            default_fee_table(sorted(df["payment_method"].dropna().unique())),
-            key=f"fees_{source}", hide_index=True, width="stretch", num_rows="fixed", disabled=["Payment method"],
+            default_fee_table(sorted(df["payment_method"].dropna().unique()), invoice_overrides),
+            key=f"fees_{source}_{invoice_key}", hide_index=True, width="stretch", num_rows="fixed",
+            disabled=["Payment method", "Source"],
             column_config={c: st.column_config.NumberColumn(c, min_value=0.0, step=0.01, format="%.2f")
                            for c in FEE_COLUMNS})
         fees = compute_fees(df, fee_table, n_months)
@@ -1066,7 +1300,8 @@ if df is not None:
 
 ledger_slot.markdown(ledger_html(source_names.get(source, source),
                                  build_ledger_items(fees, overall_rate if df is not None else None,
-                                                    at_risk if df is not None else 0)), unsafe_allow_html=True)
+                                                    at_risk if df is not None else 0, invoice)),
+                     unsafe_allow_html=True)
 
 st.markdown('<div class="site-footer">Payments Consultant · analysis grounded in real calculation</div>',
             unsafe_allow_html=True)
