@@ -30,7 +30,7 @@ st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap');
 
-.hero, .card-pill, .stat, .donut-wrap, .highlight, .bar-row, .side-list, .site-footer, .empty-state {{
+.hero, .card-pill, .ledger, .donut-wrap, .highlight, .bar-row, .side-list, .site-footer, .empty-state {{
     font-family: 'Poppins', -apple-system, BlinkMacSystemFont, sans-serif !important;
 }}
 .stApp {{ background: {CREAM}; }}
@@ -52,6 +52,7 @@ h1, h2, h3, h4 {{ color: {INK} !important; letter-spacing: -0.01em; }}
 .st-key-hero [data-testid="stButtonGroup"] button[kind*="Active"],
 .st-key-hero [data-testid="stButtonGroup"] button[aria-checked="true"] {{ background: {ORANGE}; border-color: {ORANGE}; }}
 .st-key-hero [data-testid="stButtonGroup"] button:hover {{ border-color: #FFFFFF; }}
+.st-key-hero [data-testid="stButtonGroup"] > div {{ flex-wrap: wrap; row-gap: 6px; }}
 .hero .title {{ font-size: 32px; font-weight: 800; line-height: 1.1; color: #FFFFFF; }}
 .hero .subtitle {{ font-size: 14px; color: #D5E3E0 !important; margin-top: 4px; }}
 .hero .pill {{
@@ -118,8 +119,22 @@ div[data-testid="stForm"] {{ border: none; padding: 0; }}
     flex: 1; display: flex; flex-direction: column;
 }}
 [class*="st-key-card"] {{ flex: 1; }}
-.st-key-card_metrics > div:last-child, .st-key-card_growth > div:last-child {{ margin-bottom: auto; }}
-.st-key-card_metrics > div:nth-child(2) {{ margin-top: auto; }}
+.st-key-card_growth > div:last-child {{ margin-bottom: auto; }}
+
+/* Key-metrics ledger in the sidebar (stays the same on every page) */
+[data-testid="stSidebar"] {{ background: {TEAL}; min-width: 290px !important; max-width: 290px !important; }}
+[data-testid="stSidebar"] [data-testid="stSidebarHeader"] button, [data-testid="stSidebar"] [data-testid="stSidebarHeader"] span {{ color: #FFFFFF !important; }}
+.ledger {{ color: #FFFFFF; padding: 4px 4px 0; }}
+.ledger .head {{ font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #D5E3E0; }}
+.ledger .merchant {{ font-size: 20px; font-weight: 700; margin: 2px 0 14px; }}
+.ledger .item {{ padding: 16px 0; border-top: 1px solid rgba(255,255,255,0.18); }}
+.ledger .item .lbl {{ font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #D5E3E0; }}
+.ledger .item .val {{ font-size: 30px; font-weight: 800; color: {ORANGE}; line-height: 1.15; margin-top: 2px; }}
+.ledger .item .val small {{ font-size: 14px; font-weight: 600; color: #FFFFFF; margin-left: 4px; }}
+.ledger .item .sub {{ font-size: 12px; color: #D5E3E0; margin-top: 4px; line-height: 1.4; }}
+.ledger .brk {{ display: flex; justify-content: space-between; font-size: 13px; color: #FFFFFF; padding: 3px 0; }}
+.ledger .brk span:first-child {{ color: #D5E3E0; }}
+.ledger .brk.rate {{ border-top: 1px dashed rgba(255,255,255,0.25); margin-top: 4px; padding-top: 6px; }}
 
 .empty-state {{ text-align: center; color: {MUTED}; font-size: 14px; padding: 28px 12px; }}
 .empty-state .big {{ font-size: 17px; font-weight: 600; color: {INK}; margin-bottom: 6px; }}
@@ -164,10 +179,53 @@ def donut_html(pct, colour, big, small):
             f'{TINTS.get(colour, "#EEE")} 0)"><div class="hole">{pct:.0f}%</div></div>'
             f'<div class="big">{big}</div><div class="small">{small}</div></div>')
 
-def stat_grid(stats):
-    """stats: list of (value, label)."""
-    cells = "".join(f'<div class="stat"><div class="num">{v}</div><div class="lbl">{l}</div></div>' for v, l in stats)
-    st.markdown(f'<div class="stat-grid">{cells}</div>', unsafe_allow_html=True)
+def fmt_money(v):
+    if abs(v) >= 1_000_000:
+        return f"${v/1_000_000:,.2f}M"
+    if abs(v) >= 10_000:
+        return f"${v/1_000:,.1f}k"
+    return f"${v:,.0f}"
+
+# Illustrative starting rates only - edit in the Fee Assumptions card to match the merchant's pricing.
+# Percentages apply to approved transaction value; cents apply per approved transaction.
+FEE_COLUMNS = ["Interchange %", "Interchange ¢", "Scheme fee %", "Acquiring %", "Processing ¢"]
+DEFAULT_FEES = {
+    "Visa":       [0.50, 0.0, 0.10, 0.30, 5.0],
+    "Mastercard": [0.50, 0.0, 0.10, 0.30, 5.0],
+    "Apple Pay":  [0.50, 0.0, 0.10, 0.30, 5.0],
+    "Eftpos":     [0.00, 5.0, 0.02, 0.30, 5.0],
+    "Amex":       [0.00, 0.0, 0.00, 1.40, 5.0],
+    "Other":      [0.50, 0.0, 0.10, 0.30, 5.0],
+}
+
+def default_fee_table(methods):
+    names = list(dict.fromkeys(list(methods) + ["Other"]))
+    rows = [[m] + DEFAULT_FEES.get(m, DEFAULT_FEES["Other"]) for m in names]
+    return pd.DataFrame(rows, columns=["Payment method"] + FEE_COLUMNS)
+
+def compute_fees(df, fee_table, n_months):
+    """Monthly interchange, scheme and acquiring/processing fees on approved transactions."""
+    approved = df[df["status"] == "approved"]
+    by_method = approved.groupby("payment_method")["amount"].agg(["count", "sum"])
+    rates = fee_table.set_index("Payment method")[FEE_COLUMNS].apply(pd.to_numeric, errors="coerce").fillna(0)
+    fallback = rates.loc["Other"] if "Other" in rates.index else pd.Series(0.0, index=FEE_COLUMNS)
+    totals = {"interchange": 0.0, "scheme": 0.0, "acquiring": 0.0}
+    for method, row in by_method.iterrows():
+        r = rates.loc[method] if method in rates.index else fallback
+        totals["interchange"] += row["sum"] * r["Interchange %"] / 100 + row["count"] * r["Interchange ¢"] / 100
+        totals["scheme"] += row["sum"] * r["Scheme fee %"] / 100
+        totals["acquiring"] += row["sum"] * r["Acquiring %"] / 100 + row["count"] * r["Processing ¢"] / 100
+    monthly = {k: v / n_months for k, v in totals.items()}
+    monthly["total"] = sum(monthly.values())
+    return monthly
+
+def ledger_html(merchant, items):
+    """items: list of (label, value, unit, sub)."""
+    rows = "".join(
+        f'<div class="item"><div class="lbl">{lbl}</div>'
+        f'<div class="val">{val}<small>{unit}</small></div><div class="sub">{sub}</div></div>'
+        for lbl, val, unit, sub in items)
+    return f'<div class="ledger"><div class="head">Key metrics</div><div class="merchant">{merchant}</div>{rows}</div>'
 
 def style_chart(fig, height=260, legend=False):
     fig.update_layout(
@@ -516,6 +574,15 @@ elif source == "Demo: Declining merchant":
 else:
     df = generate_demo_data(seed=99, healthy=True)
 
+# Ledger figures from the loaded data (monthly averages over the period)
+if df is not None:
+    n_months = max(pd.to_datetime(df["date"]).dt.to_period("M").nunique(), 1)
+    monthly_revenue = df.loc[df["status"] == "approved", "amount"].sum() / n_months
+    monthly_volume = len(df) / n_months
+    atv = df["amount"].mean()
+else:
+    monthly_revenue = monthly_volume = atv = None
+
 # ----- Rows 1 & 2: performance -----
 if df is not None:
     stats = build_data_summary(df)
@@ -531,15 +598,6 @@ if df is not None:
 
     r1c1, r1c2, r1c3 = st.columns(3, gap="medium")
     with r1c1:
-        with st.container(key="card_metrics"):
-            card_title("Key Metrics")
-            stat_grid([
-                (f"{overall_rate:.1f}%", "Approval rate"),
-                (f"${stats['avg_transaction_value']:.0f}", "Avg transaction"),
-                (f"{stats['monthly_txn_count']/1000:.1f}k", "Monthly txns"),
-                (f"${at_risk/1000:,.0f}k" if at_risk >= 1000 else f"${at_risk:,.0f}", "Revenue lost / mo"),
-            ])
-    with r1c2:
         with st.container(key="card_growth"):
             card_title("Approval Change")
             st.markdown('<div class="donuts">'
@@ -548,7 +606,7 @@ if df is not None:
                         + '</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="highlight"><span class="lbl">Change in<br>approval rate:</span>'
                         f'<span class="num">{change:+.1f} pts</span></div>', unsafe_allow_html=True)
-    with r1c3:
+    with r1c2:
         with st.container(key="card_methods"):
             card_title("Payment Methods")
             methods = stats["methods"].sort_values(ascending=False)
@@ -556,8 +614,7 @@ if df is not None:
                            for i, (m, v) in enumerate(methods.items())])
             st.caption("Approval rate by payment method")
 
-    r2c1, r2c2, r2c3 = st.columns(3, gap="medium")
-    with r2c1:
+    with r1c3:
         with st.container(key="card_trend"):
             card_title("Approval Trend")
             fig = px.area(monthly, x="month", y="approval_rate", markers=True, color_discrete_sequence=[ORANGE])
@@ -568,7 +625,9 @@ if df is not None:
             fig.update_xaxes(tickvals=monthly["month"],
                              ticktext=[pd.Period(m).strftime("%b") for m in monthly["month"]])
             st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
-    with r2c2:
+
+    r2c1, r2c2 = st.columns([1, 2], gap="medium")
+    with r2c1:
         with st.container(key="card_declines"):
             card_title("Decline Reasons")
             declines = stats["declines"]
@@ -584,7 +643,7 @@ if df is not None:
             style_chart(fig2, height=300).update_layout(bargap=0.35)
             fig2.update_xaxes(showgrid=True, gridcolor="#EFE6D6", range=[0, d["count"].max() * 1.2])
             st.plotly_chart(fig2, width="stretch", config={"displayModeBar": False})
-    with r2c3:
+    with r2c2:
         with st.container(key="card_agent"):
             card_title("Ask the Agent")
             default_q = "Analyse this merchant's payment performance, quantify the revenue impact of any decline, and give prioritised recommendations."
@@ -617,12 +676,13 @@ with r3c1:
     with st.container(key="card_merchant"):
         card_title("Routing Advisor")
         with st.form("routing_form", border=False):
-            f1, f2 = st.columns(2)
-            merchant_name = f1.text_input("Merchant name", value="Merchant A")
-            monthly_turnover = f2.number_input("Monthly turnover ($)", min_value=0.0, value=100000.0, step=1000.0)
+            merchant_name = st.text_input("Merchant name", value="Merchant A")
+            monthly_turnover = st.number_input("Monthly turnover ($)", min_value=0.0, step=1000.0, format="%.0f",
+                                               value=float(round(monthly_revenue, -3)) if monthly_revenue else 100000.0)
             f3, f4 = st.columns(2)
             debit_pct = f3.number_input("Dual-network debit %", min_value=0, max_value=100, value=60)
-            avg_debit_value = f4.number_input("Avg debit txn ($)", min_value=1.0, value=45.0)
+            avg_debit_value = f4.number_input("Avg debit txn ($)", min_value=1.0,
+                                              value=float(round(atv, 2)) if atv else 45.0)
             c1, c2, c3 = st.columns(3)
             eftpos_share_pct = c1.number_input("Eftpos %", min_value=0, max_value=100, value=35)
             visa_share_pct = c2.number_input("Visa %", min_value=0, max_value=100, value=40)
@@ -665,9 +725,9 @@ with r3c2:
             style_chart(fig3, height=230, legend=True).update_layout(bargap=0.45)
             fig3.update_yaxes(tickprefix="$")
             st.plotly_chart(fig3, width="stretch", config={"displayModeBar": False})
-            st.markdown(f'<div class="highlight"><span class="lbl">Today ${r["monthly_cost_current_routing_before_reform"]:,.0f}'
-                        f' → post-reform ${r["monthly_cost_current_routing_after_reform"]:,.0f}<br>'
-                        f'Saving via eftpos routing:</span>'
+            st.caption(f"Debit routing cost: \\${r['monthly_cost_current_routing_before_reform']:,.0f}/mo today → "
+                       f"\\${r['monthly_cost_current_routing_after_reform']:,.0f}/mo post-reform")
+            st.markdown(f'<div class="highlight"><span class="lbl">Saving via<br>eftpos routing:</span>'
                         f'<span class="num">${r["monthly_savings_available_after_reform"]:,.0f}/mo</span></div>',
                         unsafe_allow_html=True)
 
@@ -679,6 +739,43 @@ with r3c3:
                 st.markdown(routing["recommendation"])
             else:
                 st.caption("The consultant's written recommendation will appear here.")
+
+# ----- Row 4: fee assumptions (drive Total cost in the ledger) -----
+fees = None
+if df is not None:
+    with st.container(key="card_fees"):
+        card_title("Fee Assumptions")
+        st.caption("Rates used to estimate monthly fees on approved transactions. Starting values are illustrative - "
+                   "replace them with the merchant's actual pricing. % applies to transaction value, ¢ per transaction. "
+                   "Unlisted payment methods use the 'Other' row.")
+        fee_table = st.data_editor(
+            default_fee_table(sorted(df["payment_method"].dropna().unique())),
+            key=f"fees_{source}", hide_index=True, width="stretch", num_rows="fixed", disabled=["Payment method"],
+            column_config={c: st.column_config.NumberColumn(c, min_value=0.0, step=0.01, format="%.2f")
+                           for c in FEE_COLUMNS})
+        fees = compute_fees(df, fee_table, n_months)
+
+# ----- Key-metrics ledger (sidebar, so it stays put on every page) -----
+
+ledger_items = [
+    ("Revenue", fmt_money(monthly_revenue) if monthly_revenue is not None else "—", "/ mo",
+     "Approved card sales" + (f" · est. {fmt_money(at_risk)} lost to declines" if df is not None and at_risk > 0 else "")),
+    ("Volume", f"{monthly_volume:,.0f}" if monthly_volume is not None else "—", "txns / mo",
+     f"Approval rate {overall_rate:.1f}%" if df is not None else "Load merchant data to populate"),
+    ("ATV", f"${atv:,.2f}" if atv is not None else "—", "",
+     "Average transaction value"),
+    ("Total cost", fmt_money(fees["total"]) if fees else "—", "/ mo",
+     (f'<div class="brk"><span>Interchange</span><span>{fmt_money(fees["interchange"])}</span></div>'
+      f'<div class="brk"><span>Scheme fees</span><span>{fmt_money(fees["scheme"])}</span></div>'
+      f'<div class="brk"><span>Acquiring / processing</span><span>{fmt_money(fees["acquiring"])}</span></div>'
+      f'<div class="brk rate"><span>Effective rate</span><span>'
+      f'{(fees["total"] / monthly_revenue * 100 if monthly_revenue else 0):.2f}% of revenue</span></div>')
+     if fees else "Load merchant data to estimate fees"),
+]
+source_names = {"Demo: Declining merchant": "Declining demo", "Demo: Healthy merchant": "Healthy demo",
+                "Upload CSV": "Uploaded data"}
+with st.sidebar:
+    st.markdown(ledger_html(source_names.get(source, source), ledger_items), unsafe_allow_html=True)
 
 st.markdown('<div class="site-footer">Payments Consultant · analysis grounded in real calculation</div>',
             unsafe_allow_html=True)
