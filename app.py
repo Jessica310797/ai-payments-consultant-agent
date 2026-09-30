@@ -13,7 +13,7 @@ from anthropic import Anthropic
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-st.set_page_config(page_title="Payments Consultant", layout="wide")
+st.set_page_config(page_title="Payments Consultant", layout="wide", initial_sidebar_state="expanded")
 
 # ---------- THEME ----------
 
@@ -133,6 +133,14 @@ div[data-testid="stForm"] {{ border: none; padding: 0; }}
 /* Key-metrics ledger in the sidebar (stays the same on every page) */
 [data-testid="stSidebar"] {{ background: {TEAL}; min-width: 290px !important; max-width: 290px !important; }}
 [data-testid="stSidebar"] [data-testid="stSidebarHeader"] button, [data-testid="stSidebar"] [data-testid="stSidebarHeader"] span {{ color: #FFFFFF !important; }}
+[data-testid="stExpandSidebarButton"], [data-testid="stSidebarCollapsedControl"] button {{
+    background: {ORANGE} !important; color: #FFFFFF !important; border-radius: 999px !important;
+    padding: 4px 12px !important; width: auto !important; box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+}}
+[data-testid="stExpandSidebarButton"]::after, [data-testid="stSidebarCollapsedControl"] button::after {{
+    content: "Key metrics"; font-size: 13px; font-weight: 600; margin-left: 4px;
+}}
+[data-testid="stExpandSidebarButton"] *, [data-testid="stSidebarCollapsedControl"] button * {{ color: #FFFFFF !important; }}
 .ledger {{ color: #FFFFFF; padding: 4px 4px 0; }}
 .ledger .head {{ font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #D5E3E0; }}
 .ledger .merchant {{ font-size: 20px; font-weight: 700; margin: 2px 0 14px; }}
@@ -448,7 +456,7 @@ def analyse_debit_routing(df):
 
 def routing_split(d, column):
     """Share (%) of transactions per network for each card brand."""
-    order = [m for m in ["Visa", "Mastercard", "Apple Pay", "Eftpos"] if m in d["payment_method"].unique()]
+    order = [m for m in ["Visa", "Mastercard", "Eftpos"] if m in d["payment_method"].unique()]
     order += sorted(set(d["payment_method"].unique()) - set(order))
     out = []
     for m in order:
@@ -520,21 +528,26 @@ def load_uploaded_csv(uploaded):
         return None, "The 'status' column must contain 'approved' or 'declined' values."
     return normalise_card_columns(df), None
 
+WALLETS = {"Apple Pay", "Google Pay", "Samsung Pay"}
 NETWORK_ALIASES = {"eftpos": "Eftpos", "visa": "Visa", "mastercard": "Mastercard", "mc": "Mastercard",
                    "amex": "Amex", "american express": "Amex"}
 
 def normalise_card_columns(df):
     """Optional columns: card_type (debit/credit) and network (the network the transaction was routed on)."""
     df = df.copy()
+    if "network" in df.columns:
+        df["network"] = df["network"].astype(str).str.strip().str.lower().map(NETWORK_ALIASES)
+    else:
+        df["network"] = None
+    # Wallets aren't schemes: report them under the network they ran on, when known
+    is_wallet = df["payment_method"].isin(WALLETS)
+    df["wallet"] = df["payment_method"].where(is_wallet)
+    df.loc[is_wallet & df["network"].notna(), "payment_method"] = df["network"]
     if "card_type" in df.columns:
         df["card_type"] = df["card_type"].astype(str).str.strip().str.lower().where(
             lambda c: c.isin(["debit", "credit"]), "unknown")
     else:
         df["card_type"] = df["payment_method"].map({"Eftpos": "debit", "Amex": "credit"}).fillna("unknown")
-    if "network" in df.columns:
-        df["network"] = df["network"].astype(str).str.strip().str.lower().map(NETWORK_ALIASES)
-    else:
-        df["network"] = None
     return df
 
 def run_agent(df, question, max_iterations=5):
@@ -603,6 +616,9 @@ def add_card_attributes(df, seed, healthy):
     network = np.where(is_debit & (via_eftpos | (pm == "Eftpos")), "Eftpos", home)
     df["card_type"] = np.where(is_debit, "debit", "credit")
     df["network"] = network
+    # Apple Pay is a wallet, not a scheme: report it under the card inside it
+    df["wallet"] = np.where(pm == "Apple Pay", "Apple Pay", None)
+    df["payment_method"] = home
     return df
 
 REFORM_CONTEXT = """
@@ -721,6 +737,31 @@ if df is not None:
 else:
     monthly_revenue = monthly_volume = atv = None
 
+source_names = {"Demo: Declining merchant": "Declining demo", "Demo: Healthy merchant": "Healthy demo",
+                "Upload CSV": "Uploaded data"}
+
+def build_ledger_items(fees, overall_rate=None, at_risk=0):
+    return [
+        ("Revenue", fmt_money(monthly_revenue) if monthly_revenue is not None else "—", "/ mo",
+         "Approved card sales" + (f" · est. {fmt_money(at_risk)} lost to declines" if at_risk > 0 else "")),
+        ("Volume", f"{monthly_volume:,.0f}" if monthly_volume is not None else "—", "txns / mo",
+         f"Approval rate {overall_rate:.1f}%" if overall_rate is not None else "Load merchant data to populate"),
+        ("ATV", f"${atv:,.2f}" if atv is not None else "—", "", "Average transaction value"),
+        ("Total cost", fmt_money(fees["total"]) if fees else "—", "/ mo",
+         (f'<div class="brk"><span>Interchange</span><span>{fmt_money(fees["interchange"])}</span></div>'
+          f'<div class="brk"><span>Scheme fees</span><span>{fmt_money(fees["scheme"])}</span></div>'
+          f'<div class="brk"><span>Acquiring / processing</span><span>{fmt_money(fees["acquiring"])}</span></div>'
+          f'<div class="brk rate"><span>Effective rate</span><span>'
+          f'{(fees["total"] / monthly_revenue * 100 if monthly_revenue else 0):.2f}% of revenue</span></div>')
+         if fees else ("Calculating…" if df is not None else "Load merchant data to estimate fees")),
+    ]
+
+# Sidebar ledger is drawn straight away so it's always there, then refreshed at the end with fees
+ledger_slot = st.sidebar.empty()
+ledger_slot.markdown(ledger_html(source_names.get(source, source),
+                                 build_ledger_items(None, (df["status"] == "approved").mean() * 100
+                                                    if df is not None else None)), unsafe_allow_html=True)
+
 # ----- Rows 1-3: payment mix, routing, performance -----
 is_surcharging, surcharge_rate = False, 0.0
 debit = None
@@ -783,7 +824,10 @@ if df is not None:
                 f'<span><span class="sw" style="background:{SCHEME_COLOURS.get(m, MUTED)}"></span>{logo(m, 18)} {m}</span>'
                 for m in present) + "</div>", unsafe_allow_html=True)
             unknown = (approved["card_type"] == "unknown").mean() * 100
+            wallet_share = approved["wallet"].notna().mean() * 100 if "wallet" in approved else 0
             st.caption("Share of approved transaction value by scheme." +
+                       (f" Apple Pay ({wallet_share:.0f}% of transactions) is counted under the card's scheme."
+                        if wallet_share > 0 else "") +
                        (f" {unknown:.0f}% of transactions have no card type - add a `card_type` column."
                         if unknown > 0 else ""))
 
@@ -801,7 +845,8 @@ if df is not None:
                 st.markdown(f'<div class="route-note">Interchange on debit today: '
                             f'{fmt_money(debit["cost_today"].sum() / n_months)}/mo · '
                             f'{fmt_money(debit["cost_post_current"].sum() / n_months)}/mo from 1 Oct on this routing. '
-                            f'Credit always runs on its own scheme.</div>', unsafe_allow_html=True)
+                            f'Credit always runs on its own scheme. Apple Pay is included under each card.</div>',
+                            unsafe_allow_html=True)
 
     with r1c3:
         with st.container(key="card_routing_next"):
@@ -1015,25 +1060,9 @@ if df is not None:
 
 # ----- Key-metrics ledger (sidebar, so it stays put on every page) -----
 
-ledger_items = [
-    ("Revenue", fmt_money(monthly_revenue) if monthly_revenue is not None else "—", "/ mo",
-     "Approved card sales" + (f" · est. {fmt_money(at_risk)} lost to declines" if df is not None and at_risk > 0 else "")),
-    ("Volume", f"{monthly_volume:,.0f}" if monthly_volume is not None else "—", "txns / mo",
-     f"Approval rate {overall_rate:.1f}%" if df is not None else "Load merchant data to populate"),
-    ("ATV", f"${atv:,.2f}" if atv is not None else "—", "",
-     "Average transaction value"),
-    ("Total cost", fmt_money(fees["total"]) if fees else "—", "/ mo",
-     (f'<div class="brk"><span>Interchange</span><span>{fmt_money(fees["interchange"])}</span></div>'
-      f'<div class="brk"><span>Scheme fees</span><span>{fmt_money(fees["scheme"])}</span></div>'
-      f'<div class="brk"><span>Acquiring / processing</span><span>{fmt_money(fees["acquiring"])}</span></div>'
-      f'<div class="brk rate"><span>Effective rate</span><span>'
-      f'{(fees["total"] / monthly_revenue * 100 if monthly_revenue else 0):.2f}% of revenue</span></div>')
-     if fees else "Load merchant data to estimate fees"),
-]
-source_names = {"Demo: Declining merchant": "Declining demo", "Demo: Healthy merchant": "Healthy demo",
-                "Upload CSV": "Uploaded data"}
-with st.sidebar:
-    st.markdown(ledger_html(source_names.get(source, source), ledger_items), unsafe_allow_html=True)
+ledger_slot.markdown(ledger_html(source_names.get(source, source),
+                                 build_ledger_items(fees, overall_rate if df is not None else None,
+                                                    at_risk if df is not None else 0)), unsafe_allow_html=True)
 
 st.markdown('<div class="site-footer">Payments Consultant · analysis grounded in real calculation</div>',
             unsafe_allow_html=True)
