@@ -1,5 +1,5 @@
 streamlit
-anthropic
+anthropic>=1.9.0
 pandas
 numpy
 scikit-learn
