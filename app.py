@@ -1,4 +1,6 @@
 
+import csv
+import io
 import json
 import re
 import hashlib
@@ -495,15 +497,12 @@ def _json_from_text(text):
     except json.JSONDecodeError as e:
         raise InvoiceError("The fee data that came back wasn't readable - please try again.") from e
 
-@st.cache_data(show_spinner=False, max_entries=20)
-def extract_invoice(pdf_bytes):
-    """Read an acquirer invoice/statement PDF with Claude and return the fee data as a dict.
-    Cached on the file's bytes, so each invoice is only sent once."""
+def claude_json(content, prompt, schema, too_long="The document is too long to process in one go."):
+    """Ask Claude for JSON matching `schema` about `content` (a list of content blocks).
+    Streamed, so bytes keep flowing while Claude works - a long silent request can be cut off by the hosting
+    platform's network. Falls back to a plain request on the app's existing model if the newer parameters,
+    model or beta aren't available, or the connection drops."""
     client = get_client()
-    document = {"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
-                                               "data": base64.standard_b64encode(pdf_bytes).decode("utf-8")}}
-    # Streamed, so bytes keep flowing while Claude reads the PDF - a long silent request can be cut off by
-    # the hosting platform's network before the reply arrives.
     try:
         with client.beta.messages.stream(
             model=INVOICE_MODEL,
@@ -511,22 +510,19 @@ def extract_invoice(pdf_bytes):
             betas=["server-side-fallback-2026-07-01"],
             fallbacks="default",    # if a safety classifier declines, re-run on Anthropic's recommended fallback
             output_config={"effort": "low",     # simple extraction: low effort keeps it quick
-                           "format": {"type": "json_schema", "schema": INVOICE_SCHEMA}},
-            messages=[{"role": "user", "content": [document, {"type": "text", "text": INVOICE_PROMPT}]}],
+                           "format": {"type": "json_schema", "schema": schema}},
+            messages=[{"role": "user", "content": content + [{"type": "text", "text": prompt}]}],
         ) as stream:
             response = stream.get_final_message()
     except (TypeError, anthropic.NotFoundError, anthropic.PermissionDeniedError, anthropic.BadRequestError,
             anthropic.APIConnectionError, anthropic.InternalServerError):
-        # An older SDK on the server (TypeError on the newer parameters), an API key without access to this
-        # model or beta, or a dropped connection: retry as a plain request on the model the app already uses,
-        # asking for JSON in the text reply.
         try:
             with client.messages.stream(
                 model=INVOICE_FALLBACK_MODEL,
                 max_tokens=16000,
-                messages=[{"role": "user", "content": [document, {"type": "text", "text": (
-                    INVOICE_PROMPT + "\n\nReply with only a JSON object matching this JSON schema, no other text:\n"
-                    + json.dumps(INVOICE_SCHEMA))}]}],
+                messages=[{"role": "user", "content": content + [{"type": "text", "text": (
+                    prompt + "\n\nReply with only a JSON object matching this JSON schema, no other text:\n"
+                    + json.dumps(schema))}]}],
             ) as stream:
                 response = stream.get_final_message()
         except anthropic.APIError as e:
@@ -536,9 +532,17 @@ def extract_invoice(pdf_bytes):
     if response.stop_reason == "refusal":
         raise InvoiceError("The document couldn't be processed.")
     if response.stop_reason == "max_tokens":
-        raise InvoiceError("The invoice is too long to extract in one go - try uploading fewer pages.")
-    text = "".join(b.text for b in response.content if b.type == "text")
-    data = _json_from_text(text)
+        raise InvoiceError(too_long)
+    return _json_from_text("".join(b.text for b in response.content if b.type == "text"))
+
+@st.cache_data(show_spinner=False, max_entries=20)
+def extract_invoice(pdf_bytes):
+    """Read an acquirer invoice/statement PDF with Claude and return the fee data as a dict.
+    Cached on the file's bytes, so each invoice is only sent once."""
+    document = {"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
+                                               "data": base64.standard_b64encode(pdf_bytes).decode("utf-8")}}
+    data = claude_json([document], INVOICE_PROMPT, INVOICE_SCHEMA,
+                       too_long="The invoice is too long to extract in one go - try uploading fewer pages.")
     data.setdefault("schemes", [])
     data.setdefault("is_card_fee_document", True)
     return data
@@ -800,27 +804,300 @@ def response_text(response):
     text = "\n\n".join(b.text for b in response.content if b.type == "text").strip()
     return text or "The model returned no text. Please try again."
 
-REQUIRED_COLUMNS = ["date", "amount", "payment_method", "status", "decline_reason"]
+# ---------- TRANSACTION FILES IN ANY LAYOUT ----------
+# Read CSV / TSV / Excel / JSON exports, work out which column is which (by name, then by content, then by asking
+# Claude with just the header and a few rows), and convert to the app's standard columns:
+# date, amount, payment_method, status, decline_reason, card_type, network.
 
-def load_uploaded_csv(uploaded):
-    """Read and validate an uploaded CSV. Returns (df, error_message)."""
+TRANSACTION_FILE_TYPES = ["csv", "tsv", "txt", "xlsx", "xlsm", "json"]
+_FIELD_ALIASES = {
+    "date": ["date", "txndate", "transactiondate", "datetime", "timestamp", "createdat", "created", "transactiontime",
+             "settlementdate", "processeddate", "processedat", "tradingdate", "time"],
+    "amount": ["amount", "txnamount", "transactionamount", "saleamount", "purchaseamount", "grossamount", "gross",
+               "amountaud", "grosssales", "netsales", "sales", "salesamount", "chargeamount", "totalcollected",
+               "value", "total", "amt", "salevalue"],
+    "payment_method": ["paymentmethod", "scheme", "cardscheme", "cardbrand", "brand", "cardtype", "tendertype",
+                       "paymenttype", "card", "cardnetwork", "method"],
+    "status": ["status", "result", "outcome", "transactionstatus", "approvalstatus", "response", "responsetext", "state"],
+    "decline_reason": ["declinereason", "reason", "responsetext", "responsemessage", "errormessage", "failurereason",
+                       "failuremessage", "declinecode", "responsecode", "message"],
+    "card_type": ["fundingtype", "funding", "accounttype", "cardcategory", "debitcredit", "cardfunding", "cardtype"],
+    "network": ["network", "routednetwork", "processingnetwork", "routedvia", "routing", "acquirernetwork"],
+}
+_APPROVED = re.compile(r"approv|succe(ss|ed)|settled|captur|authori[sz]ed|complete|paid|accept|^ok$|^00$|^y(es)?$", re.I)
+_DECLINED = re.compile(r"declin|fail|reject|error|denied|refus|unsuccess|^n(o)?$", re.I)
+_SKIP_STATUS = re.compile(r"refund|void|revers|cancel|chargeback|pending", re.I)
+
+_MONEY = re.compile(r"\(?\s*-?\s*(AUD|A\$|\$)?\s*-?[\d,]*\.?\d+\s*(AUD)?\s*\)?", re.I)
+
+class TransactionFileError(Exception):
+    pass
+
+def _norm(name):
+    return re.sub(r"[^a-z0-9]", "", str(name).lower())
+
+def parse_scheme(text):
+    """Card scheme from free text such as 'VISA DEBIT', 'MasterCard', 'EFTPOS SAV', 'Apple Pay'."""
+    t = str(text).lower()
+    for keys, name in [(("apple",), "Apple Pay"), (("google", "gpay"), "Google Pay"), (("samsung",), "Samsung Pay"),
+                       (("amex", "american"), "Amex"), (("master", "maestro"), "Mastercard"), (("visa",), "Visa"),
+                       (("eftpos", "cheque", "chq", "savings", "sav"), "Eftpos"), (("diners",), "Diners"),
+                       (("jcb",), "JCB"), (("union",), "UnionPay")]:
+        if any(k in t for k in keys):
+            return name
+    return "Mastercard" if t.strip() == "mc" else "Other"
+
+def parse_funding(text):
+    t = str(text).lower()
+    if "debit" in t or "prepaid" in t or "cheque" in t or "savings" in t:
+        return "debit"
+    return "credit" if "credit" in t else "unknown"
+
+def parse_amounts(series, in_cents=False):
+    s = series.astype(str).str.strip()
+    negative = s.str.startswith("(") & s.str.endswith(")")
+    s = s.str.replace(r"[^0-9.\-]", "", regex=True)
+    out = pd.to_numeric(s, errors="coerce")
+    out = out.where(~negative, -out.abs())
+    return out / 100 if in_cents else out
+
+def parse_dates(series, day_first=True, fmt=None):
+    """Dates in any common layout. ISO (2026-08-15) is never read day-first; compact 8-digit dates (15082026 /
+    20260815) are tried both ways and the reading that works for more rows wins."""
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return series
+    s = series.astype(str).str.strip()
+    if fmt:
+        parsed = pd.to_datetime(s, errors="coerce", format=fmt)
+        if parsed.notna().mean() >= 0.5:
+            return parsed
+    sample = s.head(200)
+    if sample.str.match(r"^\d{4}-\d{2}-\d{2}").mean() >= 0.8:
+        return pd.to_datetime(s, errors="coerce", format="mixed", dayfirst=False)
+    if sample.str.fullmatch(r"\d{8}").mean() >= 0.8:
+        options = [pd.to_datetime(s, errors="coerce", format=f) for f in ("%d%m%Y", "%Y%m%d", "%m%d%Y")]
+        return max(options, key=lambda o: o.notna().sum())
+    return pd.to_datetime(s, errors="coerce", dayfirst=day_first, format="mixed")
+
+def _share(series, test):
+    vals = series.dropna().astype(str).str.strip()
+    vals = vals[vals != ""].head(200)
+    return (vals.map(test).mean() if len(vals) else 0.0)
+
+def read_table(name, data):
+    """Load an uploaded file into a DataFrame of raw values, finding the header row if there are title lines."""
+    lower = name.lower()
+    if lower.endswith((".xlsx", ".xlsm")):
+        sheets = pd.read_excel(io.BytesIO(data), sheet_name=None, header=None, dtype=object)
+        raw = max(sheets.values(), key=len)
+    elif lower.endswith(".json"):
+        parsed = json.loads(data.decode("utf-8-sig"))
+        if isinstance(parsed, dict):   # e.g. {"transactions": [...]}
+            parsed = next((v for v in parsed.values() if isinstance(v, list)), [parsed])
+        return pd.json_normalize(parsed)
+    else:
+        try:
+            text = data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = data.decode("latin-1")
+        if lower.endswith(".tsv"):
+            sep = "\t"
+        else:
+            try:
+                sep = csv.Sniffer().sniff(text[:5000], delimiters=",;\t|").delimiter
+            except csv.Error:
+                sep = ","
+        raw = pd.read_csv(io.StringIO(text), sep=sep, engine="python", header=None, dtype=str,
+                          skip_blank_lines=True, on_bad_lines="skip")
+    raw = raw.dropna(how="all").dropna(axis=1, how="all").reset_index(drop=True)
+    if raw.empty:
+        raise TransactionFileError("The file is empty.")
+    # Header = the first of the top rows that is mostly filled with text (exports often start with title lines)
+    width = raw.shape[1]
+    header_row = 0
+    for i in range(min(20, len(raw))):
+        cells = raw.iloc[i].dropna().astype(str).str.strip()
+        texty = cells[~cells.str.fullmatch(r"[-\d.,$()\s/:]+")]
+        if len(cells) >= max(2, width * 0.6) and len(texty) >= len(cells) * 0.7:
+            header_row = i
+            break
+    names, seen = [], {}
+    for c in raw.iloc[header_row]:
+        n = str(c).strip() if pd.notna(c) and str(c).strip() else f"column_{len(names) + 1}"
+        seen[n] = seen.get(n, 0) + 1
+        names.append(n if seen[n] == 1 else f"{n}_{seen[n]}")
+    table = raw.iloc[header_row + 1:].reset_index(drop=True)
+    table.columns = names
+    return table
+
+def guess_mapping(table):
+    """Map standard fields to columns by name, checked against the values; fill gaps by looking at values."""
+    cols = list(table.columns)
+    by_norm = {_norm(c): c for c in cols}
+    checks = {
+        "date": lambda col: parse_dates(table[col].head(200)).notna().mean() >= 0.8,
+        "amount": lambda col: _share(table[col], lambda v: bool(_MONEY.fullmatch(v))) >= 0.8,
+        "payment_method": lambda col: _share(table[col], lambda v: parse_scheme(v) != "Other") >= 0.6,
+        "status": lambda col: _share(table[col], lambda v: bool(_APPROVED.search(v) or _DECLINED.search(v)
+                                                                or _SKIP_STATUS.search(v))) >= 0.6,
+        "card_type": lambda col: _share(table[col], lambda v: parse_funding(v) != "unknown") >= 0.6,
+        "network": lambda col: _share(table[col], lambda v: parse_scheme(v) in ("Eftpos", "Visa", "Mastercard",
+                                                                               "Amex")) >= 0.6,
+        "decline_reason": lambda col: True,
+    }
+    mapping, used = {}, set()
+    for field in ["date", "amount", "payment_method", "status", "card_type", "network", "decline_reason"]:
+        for alias in _FIELD_ALIASES[field]:
+            col = by_norm.get(alias)
+            if col and col not in used:
+                try:
+                    ok = checks[field](col)
+                except Exception:
+                    ok = False
+                if ok:
+                    mapping[field], _ = col, used.add(col)
+                    break
+    for field in ["date", "amount", "payment_method", "status", "card_type"]:   # by content
+        if field in mapping:
+            continue
+        for col in cols:
+            if col in used:
+                continue
+            try:
+                if checks[field](col):
+                    mapping[field], _ = col, used.add(col)
+                    break
+            except Exception:
+                continue
+    return mapping
+
+_MAPPING_SCHEMA = {
+    "type": "object",
+    "properties": {
+        **{f"{f}_column": {"anyOf": [{"type": "string"}, {"type": "null"}]}
+           for f in ["date", "amount", "scheme", "status", "decline_reason", "card_type", "network"]},
+        "approved_values": {"type": "array", "items": {"type": "string"}},
+        "declined_values": {"type": "array", "items": {"type": "string"}},
+        "scheme_codes": {"type": "array", "items": {"type": "object", "properties": {
+            "raw": {"type": "string"},
+            "scheme": {"type": "string", "enum": ["Visa", "Mastercard", "Eftpos", "Amex", "Apple Pay", "Google Pay",
+                                                  "Other"]}},
+            "required": ["raw", "scheme"], "additionalProperties": False}},
+        "card_type_codes": {"type": "array", "items": {"type": "object", "properties": {
+            "raw": {"type": "string"}, "card_type": {"type": "string", "enum": ["debit", "credit", "unknown"]}},
+            "required": ["raw", "card_type"], "additionalProperties": False}},
+        "date_format": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "amount_in_cents": {"type": "boolean"},
+        "day_first": {"type": "boolean"},
+        "is_transaction_data": {"type": "boolean"},
+        "notes": {"type": "string"},
+    },
+    "required": ["date_column", "amount_column", "scheme_column", "status_column", "decline_reason_column",
+                 "card_type_column", "network_column", "approved_values", "declined_values", "scheme_codes",
+                 "card_type_codes", "date_format", "amount_in_cents",
+                 "day_first", "is_transaction_data", "notes"],
+    "additionalProperties": False,
+}
+
+@st.cache_data(show_spinner=False, max_entries=50)
+def map_columns_with_claude(columns, sample_csv, distinct_values):
+    """Ask Claude which column is which, from the header, a few (masked) sample rows, and the distinct values of
+    short code-like columns - never the whole file."""
+    prompt = (
+        "These are the column names and first rows of a merchant's card transaction export:\n\n"
+        f"{sample_csv}\n\nDistinct values of the short-list columns:\n{distinct_values}\n\n"
+        "Identify, using the exact column names shown (or null if there is none): the transaction date, the "
+        "amount, the card scheme or brand (Visa / Mastercard / eftpos / Amex...), the approval status or response, "
+        "the decline reason, the funding type (debit / credit), and the network the payment was processed on. "
+        "List the exact status values that mean approved and those that mean declined. Set amount_in_cents if "
+        "amounts are whole cents, day_first if dates are written day before month (Australian format), and "
+        "is_transaction_data false if this isn't a list of card transactions. Give date_format as a Python strptime "
+        "pattern for the date column if it's unusual (e.g. %d%m%Y), else null. If schemes or debit/credit are "
+        "written as codes (e.g. VI, MC, EP, D, C), list what each distinct code means in scheme_codes and "
+        "card_type_codes; otherwise leave those lists empty.")
+    return claude_json([], prompt, _MAPPING_SCHEMA)
+
+def _mask_card_numbers(text):
+    return re.sub(r"\b\d{12,19}\b", lambda m: m.group()[:4] + "…" + m.group()[-4:], text)
+
+@st.cache_data(show_spinner=False, max_entries=10)
+def load_transactions(name, data):
+    """Returns (df, report). Raises TransactionFileError with a plain-English message if it can't be read."""
     try:
-        df = pd.read_csv(uploaded)
+        table = read_table(name, data)
+    except TransactionFileError:
+        raise
     except Exception as e:
-        return None, f"Could not read the file as a CSV: {e}"
-    df.columns = [c.strip().lower() for c in df.columns]
-    missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
+        raise TransactionFileError(f"Couldn't open the file ({type(e).__name__}). Supported: CSV, TSV, Excel (.xlsx), JSON.") from e
+    mapping, method, notes = guess_mapping(table), "matched automatically", ""
+    approved_vals, declined_vals, in_cents, day_first, date_fmt = [], [], False, True, None
+    scheme_codes, card_type_codes = {}, {}
+    if not {"date", "amount", "payment_method"} <= set(mapping):
+        sample = _mask_card_numbers(table.head(15).to_csv(index=False))
+        distinct = "\n".join(
+            f"{c}: " + ", ".join(map(str, table[c].dropna().astype(str).str.strip().unique()[:30]))
+            for c in table.columns if 0 < table[c].nunique() <= 30)
+        ai = map_columns_with_claude(tuple(table.columns), sample, _mask_card_numbers(distinct) or "(none)")
+        if not ai.get("is_transaction_data", True):
+            raise TransactionFileError("This doesn't look like a list of card transactions.")
+        ai_map = {"date": ai.get("date_column"), "amount": ai.get("amount_column"),
+                  "payment_method": ai.get("scheme_column"), "status": ai.get("status_column"),
+                  "decline_reason": ai.get("decline_reason_column"), "card_type": ai.get("card_type_column"),
+                  "network": ai.get("network_column")}
+        mapping = {f: c for f, c in ai_map.items() if c in table.columns}
+        approved_vals = [v.strip().lower() for v in ai.get("approved_values", [])]
+        declined_vals = [v.strip().lower() for v in ai.get("declined_values", [])]
+        in_cents, day_first = bool(ai.get("amount_in_cents")), bool(ai.get("day_first", True))
+        date_fmt = ai.get("date_format")
+        scheme_codes = {c["raw"].strip().lower(): c["scheme"] for c in ai.get("scheme_codes", [])}
+        card_type_codes = {c["raw"].strip().lower(): c["card_type"] for c in ai.get("card_type_codes", [])}
+        method, notes = "mapped by Claude", ai.get("notes", "")
+    missing = [f for f in ["date", "amount"] if f not in mapping]
     if missing:
-        return None, f"CSV is missing required column(s): {', '.join(missing)}."
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
-    df["status"] = df["status"].astype(str).str.strip().str.lower()
-    df = df.dropna(subset=["date", "amount"])
-    if df.empty:
-        return None, "No rows with a valid date and amount were found."
-    if not df["status"].isin(["approved", "declined"]).any():
-        return None, "The 'status' column must contain 'approved' or 'declined' values."
-    return normalise_card_columns(df), None
+        raise TransactionFileError(f"Couldn't find a {' or '.join(missing)} column. Columns found: "
+                                   + ", ".join(map(str, table.columns[:12])))
+    out = pd.DataFrame({"date": parse_dates(table[mapping["date"]], day_first, date_fmt),
+                        "amount": parse_amounts(table[mapping["amount"]], in_cents)})
+    scheme_src = table[mapping["payment_method"]] if "payment_method" in mapping else pd.Series("Other", index=table.index)
+    out["payment_method"] = scheme_src.map(lambda v: scheme_codes.get(str(v).strip().lower()) or parse_scheme(v))
+    if "status" in mapping:
+        raw_status = table[mapping["status"]].astype(str).str.strip()
+        def status_of(v):
+            lv = v.lower()
+            if lv in approved_vals:
+                return "approved"
+            if lv in declined_vals:
+                return "declined"
+            if _SKIP_STATUS.search(v):
+                return None
+            if _DECLINED.search(v) or re.search(r"\bnot\b", lv):   # before approved: "Unsuccessful", "Not approved"
+                return "declined"
+            return "approved" if _APPROVED.search(v) else None
+        out["status"] = raw_status.map(status_of)
+    else:
+        out["status"] = "approved"    # e.g. settlement reports only list successful payments
+    out["decline_reason"] = (table[mapping["decline_reason"]].where(out["status"] == "declined")
+                             if "decline_reason" in mapping else None)
+    if "card_type" in mapping:
+        out["card_type"] = table[mapping["card_type"]].map(
+            lambda v: card_type_codes.get(str(v).strip().lower()) or parse_funding(v))
+    else:
+        out["card_type"] = scheme_src.map(parse_funding)
+    if "network" in mapping:
+        out["network"] = table[mapping["network"]].map(parse_scheme).where(
+            lambda n: n.isin(["Eftpos", "Visa", "Mastercard", "Amex"]))
+    rows_read = len(out)
+    refunds = int((out["amount"] <= 0).sum())
+    other_status = int(out["status"].isna().sum())
+    out = out[(out["amount"] > 0) & out["status"].notna()].dropna(subset=["date", "amount"])
+    if out.empty:
+        raise TransactionFileError("No usable transactions were found (need a date and a positive amount).")
+    out["card_type"] = out["card_type"].replace("unknown", pd.NA)
+    df = normalise_card_columns(out.assign(card_type=out["card_type"].fillna("unknown")).reset_index(drop=True))
+    report = {"rows_read": rows_read, "rows_used": len(df), "refunds_or_zero": refunds,
+              "other_status": other_status, "mapping": mapping, "method": method, "notes": notes,
+              "no_status": "status" not in mapping}
+    return df, report
 
 WALLETS = {"Apple Pay", "Google Pay", "Samsung Pay"}
 NETWORK_ALIASES = {"eftpos": "Eftpos", "visa": "Visa", "mastercard": "Mastercard", "mc": "Mastercard",
@@ -841,7 +1118,10 @@ def normalise_card_columns(df):
         df["card_type"] = df["card_type"].astype(str).str.strip().str.lower().where(
             lambda c: c.isin(["debit", "credit"]), "unknown")
     else:
-        df["card_type"] = df["payment_method"].map({"Eftpos": "debit", "Amex": "credit"}).fillna("unknown")
+        df["card_type"] = "unknown"
+    # eftpos is always debit and Amex always credit, whatever the file said (or didn't)
+    implied = df["payment_method"].map({"Eftpos": "debit", "Amex": "credit"})
+    df["card_type"] = df["card_type"].where(df["card_type"] != "unknown", implied.fillna("unknown"))
     return df
 
 def run_agent(df, question, invoice=None, max_iterations=5):
@@ -960,8 +1240,10 @@ with st.container(key="hero"):
     with h_right:
         u1, u2 = st.columns(2)
         invoice_pdf = u1.file_uploader("Merchant invoice / statement (PDF)", type=["pdf"], key="invoice_pdf")
-        uploaded = u2.file_uploader("Transactions (CSV, optional)", type=["csv"], key="transactions_csv")
+        uploaded = u2.file_uploader("Transactions (CSV / Excel, optional)", type=TRANSACTION_FILE_TYPES,
+                                    key="transactions_csv")
         invoice_status = st.container()
+        txn_status = st.container()
 
 # ----- Read the invoice (Claude) -----
 invoice, invoice_key = None, "none"
@@ -993,12 +1275,35 @@ if invoice_pdf is not None:
         invoice_key = hashlib.sha1(pdf_bytes).hexdigest()[:12]
 invoice_overrides = invoice_rates(invoice) if invoice else {}
 
-# ----- Read the transactions CSV (optional) -----
+# ----- Read the transactions file (optional, any common layout) -----
 df = None
 if uploaded is not None:
-    df, error = load_uploaded_csv(uploaded)
-    if error:
-        st.error(error)
+    with txn_status:
+        with st.status("Reading transactions…") as tstatus:
+            try:
+                df, report = load_transactions(uploaded.name, uploaded.getvalue())
+                labels = {"date": "Date", "amount": "Amount", "payment_method": "Card scheme", "status": "Status",
+                          "decline_reason": "Decline reason", "card_type": "Debit / credit", "network": "Network"}
+                tstatus.update(label=f"Transactions read ✓ {report['rows_used']:,} rows ({report['method']})",
+                               state="complete", expanded=False)
+                st.caption(" · ".join(f"{labels[f]} ← {c}" for f, c in report["mapping"].items()))
+                skipped = []
+                if report["refunds_or_zero"]:
+                    skipped.append(f"{report['refunds_or_zero']:,} negative or zero amounts (refunds)")
+                if report["other_status"]:
+                    skipped.append(f"{report['other_status']:,} voided, refunded or pending rows")
+                if skipped:
+                    st.caption("Left out: " + ", ".join(skipped) + ".")
+                if report["no_status"]:
+                    st.caption("No status column, so every row is treated as approved.")
+                if report["notes"]:
+                    st.caption(report["notes"])
+            except (TransactionFileError, InvoiceError) as e:
+                tstatus.update(label="Couldn't read the transactions file", state="error", expanded=True)
+                st.error(redact(str(e)))
+            except Exception as e:
+                tstatus.update(label="Couldn't read the transactions file", state="error", expanded=True)
+                st.error(f"{type(e).__name__}: {redact(str(e))[:200]}")
 data_key = f"{invoice_key}|{uploaded.file_id if uploaded is not None else 'none'}"
 
 # ----- Headline figures: transactions when available, otherwise the invoice -----
@@ -1120,7 +1425,8 @@ if df is None and invoice is None:
             '<div class="empty-state"><div class="big">Upload a merchant invoice or statement (PDF) above</div>'
             "Claude reads the fees, card mix and routing from it, fills in the key-metrics ledger, and works out "
             "the merchant's position under the 1 October 2026 RBA reform.<br><br>"
-            "Optionally add a transactions CSV for approval rates, decline analysis and transaction-level routing.</div>",
+            "Optionally add a transactions export (CSV, Excel or JSON, any column layout) for approval rates, "
+            "decline analysis and transaction-level routing.</div>",
             unsafe_allow_html=True)
         st.download_button("Download transactions CSV template", CSV_TEMPLATE, file_name="transactions_template.csv",
                            mime="text/csv")
