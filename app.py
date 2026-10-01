@@ -1067,6 +1067,23 @@ def map_columns_with_claude(columns, sample_csv, distinct_values):
 def _mask_card_numbers(text):
     return re.sub(r"\b\d{12,19}\b", lambda m: m.group()[:4] + "…" + m.group()[-4:], text)
 
+def _doubtful(table, mapping):
+    """True when the automatic match found the columns but can't be trusted to read them correctly, so Claude
+    should check: status codes it can't classify (e.g. '05'), or whole-number amounts that may be in cents."""
+    if "status" in mapping:
+        vals = table[mapping["status"]].dropna().astype(str).str.strip()
+        vals = vals[vals != ""]
+        unknown = vals.map(lambda v: not (_APPROVED.search(v) or _DECLINED.search(v) or _SKIP_STATUS.search(v)
+                                          or re.search(r"\bnot\b", v.lower())))
+        if len(vals) and unknown.mean() > 0.05:
+            return True
+    amounts = table[mapping["amount"]].dropna().astype(str).str.strip().head(500)
+    if len(amounts) and not amounts.str.contains(r"[.$]").any():
+        numbers = parse_amounts(amounts).dropna()
+        if len(numbers) and numbers.median() >= 100:     # e.g. 11448 for $114.48
+            return True
+    return False
+
 @st.cache_data(show_spinner=False, max_entries=10)
 def load_transactions(name, data):
     """Returns (df, report). Raises TransactionFileError with a plain-English message if it can't be read."""
@@ -1079,7 +1096,7 @@ def load_transactions(name, data):
     mapping, method, notes = guess_mapping(table), "matched automatically", ""
     approved_vals, declined_vals, in_cents, day_first, date_fmt = [], [], False, True, None
     scheme_codes, card_type_codes, ai_fees = {}, {}, None
-    if not {"date", "amount", "payment_method"} <= set(mapping):
+    if not {"date", "amount", "payment_method"} <= set(mapping) or _doubtful(table, mapping):
         sample = _mask_card_numbers(table.head(15).to_csv(index=False))
         distinct = "\n".join(
             f"{c}: " + ", ".join(map(str, table[c].dropna().astype(str).str.strip().unique()[:30]))
