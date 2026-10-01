@@ -1,5 +1,12 @@
 # ai-payments-consultant-agent
 
+## Getting started
+
+Upload a merchant's acquirer **invoice or statement (PDF)** in the header. That alone drives the dashboard:
+the key-metrics ledger, payment mix, current and suggested debit routing, surcharge impact, the agent and the
+Routing Advisor. Add a **transactions CSV** (optional) for approval rates, decline analysis and transaction-level
+routing and fee estimates.
+
 ## Transaction data
 
 Upload a CSV with `date, amount, payment_method, status, decline_reason`. Two optional columns unlock the
@@ -16,7 +23,7 @@ eftpos mark: place the official file at `assets/logos/eftpos.svg` and the app us
 
 ## Invoice / statement PDFs
 
-Upload a merchant's acquirer invoice or statement (PDF) in the sidebar under **Actual fees**. Claude reads it
+Upload a merchant's acquirer invoice or statement (PDF) in the header. Claude reads it
 (model `claude-opus-5-5`, structured JSON output) and extracts the period, pricing model, fee totals and per-scheme
 rates. Those rates pre-fill the Fee Assumptions table (rows marked `Invoice`), so the ledger's Total cost uses them,
 and the ledger also shows the invoice's actual total. Requires `ANTHROPIC_API_KEY` in the app's secrets, like the

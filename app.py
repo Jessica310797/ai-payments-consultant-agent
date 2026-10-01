@@ -50,7 +50,7 @@ header[data-testid="stHeader"] {{ background: transparent; }}
 footer {{ visibility: hidden; }}
 h1, h2, h3, h4 {{ color: {INK} !important; letter-spacing: -0.01em; }}
 
-/* Header bar (a keyed container so it can hold the data-source picker) */
+/* Header bar (a keyed container so it can hold the invoice and CSV uploaders) */
 .st-key-hero {{
     background: {TEAL}; border-radius: 0 0 24px 24px; padding: 54px 28px 18px; margin-bottom: 4px;
 }}
@@ -64,6 +64,7 @@ h1, h2, h3, h4 {{ color: {INK} !important; letter-spacing: -0.01em; }}
 .st-key-hero [data-testid="stButtonGroup"] button[aria-checked="true"] {{ background: {ORANGE}; border-color: {ORANGE}; }}
 .st-key-hero [data-testid="stButtonGroup"] button:hover {{ border-color: #FFFFFF; }}
 .st-key-hero [data-testid="stButtonGroup"] > div {{ flex-wrap: wrap; row-gap: 6px; }}
+.st-key-hero [data-testid="stAlert"] p, .st-key-hero [data-testid="stAlert"] span {{ color: {INK} !important; }}
 .hero .title {{ font-size: 32px; font-weight: 800; line-height: 1.1; color: #FFFFFF; }}
 .hero .subtitle {{ font-size: 14px; color: #D5E3E0 !important; margin-top: 4px; }}
 .hero .pill {{
@@ -148,17 +149,20 @@ div[data-testid="stForm"] {{ border: none; padding: 0; }}
 .ledger-upload {{ font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
     color: #D5E3E0; border-top: 1px solid rgba(255,255,255,0.18); padding-top: 16px; margin: 8px 4px 0; }}
 [data-testid="stSidebar"] [data-testid="stFileUploader"] label p,
+.st-key-hero [data-testid="stFileUploader"] label p,
 [data-testid="stSidebar"] [data-testid="stFileUploader"] small,
-[data-testid="stSidebar"] [data-testid="stFileUploaderFileName"] {{ color: #FFFFFF !important; }}
-[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] {{
+.st-key-hero [data-testid="stFileUploader"] small,
+[data-testid="stSidebar"] [data-testid="stFileUploaderFileName"], .st-key-hero [data-testid="stFileUploaderFileName"] {{ color: #FFFFFF !important; }}
+[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"], .st-key-hero [data-testid="stFileUploaderDropzone"] {{
     background: rgba(255,255,255,0.08); border: 1px dashed rgba(255,255,255,0.45); color: #FFFFFF;
 }}
-[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] * {{ color: #FFFFFF; }}
-[data-testid="stSidebar"] [data-testid="stExpander"] details {{ background: {CREAM}; border-radius: 10px; border: none; }}
+[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] *, .st-key-hero [data-testid="stFileUploaderDropzone"] * {{ color: #FFFFFF; }}
+[data-testid="stSidebar"] [data-testid="stExpander"] details, .st-key-hero [data-testid="stExpander"] details {{ background: {CREAM}; border-radius: 10px; border: none; }}
 [data-testid="stSidebar"] [data-testid="stExpander"] summary,
-[data-testid="stSidebar"] [data-testid="stExpander"] summary * {{ color: {INK} !important; font-weight: 600; }}
-[data-testid="stSidebar"] [data-testid="stExpander"] [data-testid="stCaptionContainer"] * {{ color: {MUTED} !important; }}
-[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button {{
+.st-key-hero [data-testid="stExpander"] summary,
+[data-testid="stSidebar"] [data-testid="stExpander"] summary *, .st-key-hero [data-testid="stExpander"] summary * {{ color: {INK} !important; font-weight: 600; }}
+[data-testid="stSidebar"] [data-testid="stExpander"] [data-testid="stCaptionContainer"] *, .st-key-hero [data-testid="stExpander"] [data-testid="stCaptionContainer"] * {{ color: {MUTED} !important; }}
+[data-testid="stSidebar"] [data-testid="stFileUploaderDropzone"] button, .st-key-hero [data-testid="stFileUploaderDropzone"] button {{
     background: {ORANGE}; border: none; color: #FFFFFF;
 }}
 .ledger .head {{ font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: #D5E3E0; }}
@@ -698,21 +702,78 @@ def routing_split(d, column):
         out.append((m, len(sub), shares))
     return out
 
-def surcharge_impact(df, debit, n_months, surcharging, rate_pct):
-    """Monthly surcharge income lost to the 1 Oct ban, routing savings, and the net effect."""
+def surcharge_base_from_df(df, n_months):
+    """Monthly approved value on the networks covered by the 1 Oct surcharge ban."""
     approved = df[df["status"] == "approved"]
     if approved["network"].notna().any():
         banned = approved["network"].isin(SURCHARGE_BAN_NETWORKS)
     else:
         banned = approved["payment_method"] != "Amex"
-    base = approved.loc[banned, "amount"].sum() / n_months
+    return approved.loc[banned, "amount"].sum() / n_months
+
+def surcharge_impact(base, revenue, saving, surcharging, rate_pct):
+    """Monthly surcharge income lost to the 1 Oct ban, the routing saving, and the net effect."""
     lost = base * rate_pct / 100 if surcharging else 0.0
-    saving = ((debit["cost_post_current"].sum() - debit["cost_post_suggested"].sum()) / n_months
-              if debit is not None else 0.0)
-    revenue = approved["amount"].sum() / n_months
     net = saving - lost
     return {"base": base, "lost": lost, "saving": saving, "net": net,
             "price_rise_pct": (-net / revenue * 100) if (net < 0 and revenue) else 0.0}
+
+# ---------- INVOICE-DRIVEN ANALYSIS (when there's no transaction CSV) ----------
+
+def invoice_months(invoice):
+    """Length of the invoice period in months (at least 1), used to express figures per month."""
+    try:
+        start, end = pd.to_datetime(invoice.get("period_start")), pd.to_datetime(invoice.get("period_end"))
+        return max(round(((end - start).days + 1) / 30.44), 1)
+    except Exception:
+        return 1
+
+def invoice_totals(invoice):
+    lines = invoice.get("schemes", [])
+    value = invoice.get("total_card_value") or sum(l.get("value") or 0 for l in lines) or None
+    txns = invoice.get("total_transactions") or sum(l.get("transactions") or 0 for l in lines) or None
+    return value, txns
+
+def invoice_mix(invoice):
+    """Scheme lines as rows (scheme, card_type, value, count) for the Payment Mix pies."""
+    rows = []
+    for l in invoice.get("schemes", []):
+        if not l.get("value"):
+            continue
+        ct = l["card_type"]
+        if ct == "all":
+            ct = {"Eftpos": "debit", "Amex": "credit"}.get(l["scheme"], "all")
+        rows.append({"scheme": l["scheme"], "card_type": ct, "value": l["value"], "count": l.get("transactions") or 0})
+    return pd.DataFrame(rows, columns=["scheme", "card_type", "value", "count"])
+
+def invoice_debit_routing(invoice, months):
+    """Debit value by network from the invoice, and the post-reform least-cost suggestion for each line
+    (eftpos when the line's average sale is at or above LCR_THRESHOLD). None if the invoice has no debit split."""
+    lines = []
+    for l in invoice.get("schemes", []):
+        is_debit = l["card_type"] == "debit" or (l["scheme"] == "Eftpos" and l["card_type"] == "all")
+        if is_debit and l["scheme"] in ("Eftpos", "Visa", "Mastercard") and l.get("value"):
+            lines.append(l)
+    if not lines:
+        return None
+    out, saving = [], 0.0
+    for l in lines:
+        txns = l.get("transactions")
+        avg = l["value"] / txns if txns else None
+        to_eftpos = l["scheme"] != "Eftpos" and avg is not None and avg >= LCR_THRESHOLD
+        if to_eftpos:
+            post_now = min(avg * SCHEME_DEBIT_RATE.get(l["scheme"], VISA_DEBIT_ADVALOREM), POST_REFORM_DEBIT_CAP)
+            saving += max(post_now - EFTPOS_FLAT_FEE, 0) * txns / months
+        out.append({"scheme": l["scheme"], "value": l["value"] / months, "txns": (txns or 0) / months, "avg": avg,
+                    "suggested": "Eftpos" if (to_eftpos or l["scheme"] == "Eftpos") else l["scheme"]})
+    total = sum(r["value"] for r in out)
+    now = {}
+    nxt = {}
+    for r in out:
+        now[r["scheme"]] = now.get(r["scheme"], 0) + r["value"] / total * 100
+        nxt[r["suggested"]] = nxt.get(r["suggested"], 0) + r["value"] / total * 100
+    return {"lines": out, "total": total, "now": now, "next": nxt, "saving": saving,
+            "unknown_avg": any(r["avg"] is None for r in out)}
 
 # ---------- DATA HELPERS ----------
 
@@ -783,14 +844,18 @@ def normalise_card_columns(df):
         df["card_type"] = df["payment_method"].map({"Eftpos": "debit", "Amex": "credit"}).fillna("unknown")
     return df
 
-def run_agent(df, question, max_iterations=5):
+def run_agent(df, question, invoice=None, max_iterations=5):
     client = get_client()
-    stats = build_data_summary(df)
+    context = []
+    if df is not None:
+        stats = build_data_summary(df)
+        context.append(f"TRANSACTION DATA:\n{stats['summary_text']}\n\n"
+                       f"Average transaction value: ${stats['avg_transaction_value']:.2f}\n"
+                       f"Approx monthly transactions: {stats['monthly_txn_count']:.0f}")
+    if invoice:
+        context.append("ACQUIRER INVOICE (extracted figures, null = not stated):\n" + json.dumps(invoice, indent=1))
     messages = [{"role": "user", "content": (
-        f"MERCHANT DATA:\n{stats['summary_text']}\n\n"
-        f"Average transaction value: ${stats['avg_transaction_value']:.2f}\n"
-        f"Approx monthly transactions: {stats['monthly_txn_count']:.0f}\n\n"
-        f"QUESTION: {question}\n\nUse tools for any exact figures or facts - do not guess.")}]
+        "\n\n".join(context) + f"\n\nQUESTION: {question}\n\nUse tools for any exact figures or facts - do not guess.")}]
     tool_log = []
     for _ in range(max_iterations):
         response = client.messages.create(model="claude-sonnet-4-6", max_tokens=1500,
@@ -810,51 +875,6 @@ def run_agent(df, question, max_iterations=5):
                                     "content": f"Tool error: {e}", "is_error": True})
         messages.append({"role": "user", "content": results})
     return "Reached iteration limit without a final answer.", tool_log
-
-@st.cache_data(show_spinner=False)
-def generate_demo_data(seed, healthy=False):
-    np.random.seed(seed)
-    dates = pd.date_range(start="2026-01-01", end="2026-06-30", freq="D")
-    payment_methods = ["Visa", "Mastercard", "Amex", "Apple Pay", "Eftpos"]
-    rows = []
-    for date in dates:
-        n = np.random.randint(150, 300)
-        if healthy:
-            base_rate, weights = 0.97, {"Insufficient Funds": 0.3, "Card Expired": 0.25, "Invalid CVV": 0.2, "Fraud Suspected": 0.15, "Issuer Timeout": 0.1}
-        else:
-            month = date.month
-            if month <= 2: base_rate, weights = 0.94, {"Insufficient Funds": 0.3, "Card Expired": 0.25, "Invalid CVV": 0.2, "Fraud Suspected": 0.15, "Issuer Timeout": 0.1}
-            elif month <= 4: base_rate, weights = 0.90, {"Insufficient Funds": 0.25, "Card Expired": 0.2, "Invalid CVV": 0.15, "Fraud Suspected": 0.15, "Issuer Timeout": 0.25}
-            else: base_rate, weights = 0.83, {"Insufficient Funds": 0.15, "Card Expired": 0.1, "Invalid CVV": 0.1, "Fraud Suspected": 0.25, "Issuer Timeout": 0.4}
-        reasons, w = list(weights.keys()), list(weights.values())
-        for _ in range(n):
-            approved = np.random.random() < base_rate
-            rows.append({"date": date, "amount": round(np.random.uniform(5, 500), 2),
-                         "payment_method": np.random.choice(payment_methods, p=[0.35, 0.3, 0.15, 0.1, 0.1]),
-                         "status": "approved" if approved else "declined",
-                         "decline_reason": None if approved else np.random.choice(reasons, p=w)})
-    return pd.DataFrame(rows)
-
-def add_card_attributes(df, seed, healthy):
-    """Demo-only: assign debit/credit and the network each transaction was routed on.
-    Kept outside the cached generator so changes here take effect without a cache clear."""
-    df = df.copy()
-    rng = np.random.default_rng(seed + 1000)
-    n, pm = len(df), df["payment_method"].to_numpy()
-    debit_p = pd.Series(pm).map({"Eftpos": 1.0, "Amex": 0.0, "Visa": 0.55, "Mastercard": 0.5, "Apple Pay": 0.6}).fillna(0.5)
-    is_debit = rng.random(n) < debit_p.to_numpy()
-    lcr_p = 0.6 if healthy else 0.25          # share of dual-network debit the acquirer sends via eftpos today
-    via_eftpos = rng.random(n) < lcr_p
-    wallet_scheme = np.where(rng.random(n) < 0.5, "Visa", "Mastercard")
-    home = np.select([pm == "Visa", pm == "Mastercard", pm == "Amex", pm == "Eftpos"],
-                     ["Visa", "Mastercard", "Amex", "Eftpos"], default=wallet_scheme)
-    network = np.where(is_debit & (via_eftpos | (pm == "Eftpos")), "Eftpos", home)
-    df["card_type"] = np.where(is_debit, "debit", "credit")
-    df["network"] = network
-    # Apple Pay is a wallet, not a scheme: report it under the card inside it
-    df["wallet"] = np.where(pm == "Apple Pay", "Apple Pay", None)
-    df["payment_method"] = home
-    return df
 
 REFORM_CONTEXT = """
 RBA INTERCHANGE AND SURCHARGING REFORM - KEY FACTS (effective mostly 1 October 2026):
@@ -927,9 +947,9 @@ CSV_TEMPLATE = (
 def empty_state(title, body):
     st.markdown(f'<div class="empty-state"><div class="big">{title}</div>{body}</div>', unsafe_allow_html=True)
 
-# ----- Header bar with data source -----
+# ----- Header bar: invoice PDF (primary) and transactions CSV (optional) -----
 with st.container(key="hero"):
-    h_left, h_right = st.columns([3, 2], vertical_alignment="center")
+    h_left, h_right = st.columns([5, 4], vertical_alignment="center")
     with h_left:
         st.markdown(f"""
         <div class="hero">
@@ -938,83 +958,19 @@ with st.container(key="hero"):
             <div class="pill">{reform_pill}</div>
         </div>""", unsafe_allow_html=True)
     with h_right:
-        source = st.segmented_control(
-            "Merchant data", ["Demo: Declining merchant", "Demo: Healthy merchant", "Upload CSV"],
-            default="Demo: Declining merchant", key="source",
-            format_func={"Demo: Declining merchant": "Declining demo", "Demo: Healthy merchant": "Healthy demo",
-                         "Upload CSV": "Upload CSV"}.get,
-        ) or "Demo: Declining merchant"
+        u1, u2 = st.columns(2)
+        invoice_pdf = u1.file_uploader("Merchant invoice / statement (PDF)", type=["pdf"], key="invoice_pdf")
+        uploaded = u2.file_uploader("Transactions (CSV, optional)", type=["csv"], key="transactions_csv")
+        invoice_status = st.container()
 
-df = None
-if source == "Upload CSV":
-    up_col, tmpl_col = st.columns([4, 1], vertical_alignment="bottom")
-    with up_col:
-        uploaded = st.file_uploader("CSV with columns: date, amount, payment_method, status, decline_reason",
-                                    type=["csv"])
-    with tmpl_col:
-        st.download_button("Download template", CSV_TEMPLATE, file_name="transactions_template.csv",
-                           mime="text/csv", width="stretch")
-    if uploaded:
-        df, error = load_uploaded_csv(uploaded)
-        if error:
-            st.error(error)
-elif source == "Demo: Declining merchant":
-    df = add_card_attributes(generate_demo_data(seed=42, healthy=False), seed=42, healthy=False)
-else:
-    df = add_card_attributes(generate_demo_data(seed=99, healthy=True), seed=99, healthy=True)
-
-# Ledger figures from the loaded data (monthly averages over the period)
-if df is not None:
-    n_months = max(pd.to_datetime(df["date"]).dt.to_period("M").nunique(), 1)
-    monthly_revenue = df.loc[df["status"] == "approved", "amount"].sum() / n_months
-    monthly_volume = len(df) / n_months
-    atv = df["amount"].mean()
-else:
-    monthly_revenue = monthly_volume = atv = None
-
-source_names = {"Demo: Declining merchant": "Declining demo", "Demo: Healthy merchant": "Healthy demo",
-                "Upload CSV": "Uploaded data"}
-
-def build_ledger_items(fees, overall_rate=None, at_risk=0, invoice=None):
-    inv_line = ""
-    if invoice and invoice.get("total_fees") is not None:
-        rate = (f' · {invoice["total_fees"] / invoice["total_card_value"] * 100:.2f}%'
-                if invoice.get("total_card_value") else "")
-        inv_line = (f'<div class="brk rate"><span>Invoice actual</span>'
-                    f'<span>{fmt_money(invoice["total_fees"])}{rate}</span></div>')
-    return [
-        ("Revenue", fmt_money(monthly_revenue) if monthly_revenue is not None else "—", "/ mo",
-         "Approved card sales" + (f" · est. {fmt_money(at_risk)} lost to declines" if at_risk > 0 else "")),
-        ("Volume", f"{monthly_volume:,.0f}" if monthly_volume is not None else "—", "txns / mo",
-         f"Approval rate {overall_rate:.1f}%" if overall_rate is not None else "Load merchant data to populate"),
-        ("ATV", f"${atv:,.2f}" if atv is not None else "—", "", "Average transaction value"),
-        ("Total cost", fmt_money(fees["total"]) if fees else "—", "/ mo",
-         (f'<div class="brk"><span>Interchange</span><span>{fmt_money(fees["interchange"])}</span></div>'
-          f'<div class="brk"><span>Scheme fees</span><span>{fmt_money(fees["scheme"])}</span></div>'
-          f'<div class="brk"><span>Acquiring / processing</span><span>{fmt_money(fees["acquiring"])}</span></div>'
-          f'<div class="brk rate"><span>Effective rate</span><span>'
-          f'{(fees["total"] / monthly_revenue * 100 if monthly_revenue else 0):.2f}% of revenue</span></div>'
-          + inv_line)
-         if fees else ("Calculating…" if df is not None else "Load merchant data to estimate fees") + inv_line),
-    ]
-
-# Sidebar ledger is drawn straight away so it's always there, then refreshed at the end with fees
-ledger_slot = st.sidebar.empty()
-ledger_slot.markdown(ledger_html(source_names.get(source, source),
-                                 build_ledger_items(None, (df["status"] == "approved").mean() * 100
-                                                    if df is not None else None)), unsafe_allow_html=True)
-
-# Invoice / statement PDF upload (sidebar, under the ledger): Claude reads the fees out of it
-with st.sidebar:
-    st.markdown('<div class="ledger-upload">Actual fees</div>', unsafe_allow_html=True)
-    invoice_pdf = st.file_uploader("Upload an invoice or merchant statement (PDF)", type=["pdf"], key="invoice_pdf")
+# ----- Read the invoice (Claude) -----
 invoice, invoice_key = None, "none"
 if invoice_pdf is not None:
     pdf_bytes = invoice_pdf.getvalue()
-    if len(pdf_bytes) > MAX_PDF_BYTES:
-        st.sidebar.error("That PDF is over 30 MB - please upload a smaller file.")
-    else:
-        with st.sidebar:
+    with invoice_status:
+        if len(pdf_bytes) > MAX_PDF_BYTES:
+            st.error("That PDF is over 30 MB - please upload a smaller file.")
+        else:
             with st.status("Reading invoice with Claude - this can take up to a minute…") as status:
                 try:
                     invoice = extract_invoice(pdf_bytes)
@@ -1032,110 +988,236 @@ if invoice_pdf is not None:
                     found = (f"total fees {fmt_money(invoice['total_fees'])}" if invoice.get("total_fees") is not None
                              else "no fee total found")
                     status.update(label=f"Invoice read ✓ {found}", state="complete", expanded=False)
-                    st.caption(f"{len(invoice.get('schemes', []))} scheme line(s) found. "
-                               + ("Rates are applied in the Fee Assumptions table."
-                                  if df is not None else "Load transaction data to apply the rates."))
-        if invoice is not None:
-            invoice_key = hashlib.sha1(pdf_bytes).hexdigest()[:12]
+                    st.caption(f"{len(invoice.get('schemes', []))} scheme line(s) found.")
+    if invoice is not None:
+        invoice_key = hashlib.sha1(pdf_bytes).hexdigest()[:12]
 invoice_overrides = invoice_rates(invoice) if invoice else {}
 
-# ----- Rows 1-3: payment mix, routing, performance -----
+# ----- Read the transactions CSV (optional) -----
+df = None
+if uploaded is not None:
+    df, error = load_uploaded_csv(uploaded)
+    if error:
+        st.error(error)
+data_key = f"{invoice_key}|{uploaded.file_id if uploaded is not None else 'none'}"
+
+# ----- Headline figures: transactions when available, otherwise the invoice -----
+inv_months = invoice_months(invoice) if invoice else 1
+if df is not None:
+    n_months = max(pd.to_datetime(df["date"]).dt.to_period("M").nunique(), 1)
+    monthly_revenue = df.loc[df["status"] == "approved", "amount"].sum() / n_months
+    monthly_volume = len(df) / n_months
+    atv = df["amount"].mean()
+elif invoice:
+    n_months = inv_months
+    _value, _txns = invoice_totals(invoice)
+    monthly_revenue = _value / n_months if _value else None
+    monthly_volume = _txns / n_months if _txns else None
+    atv = _value / _txns if (_value and _txns) else None
+else:
+    n_months, monthly_revenue, monthly_volume, atv = 1, None, None, None
+
+merchant_label = ((invoice or {}).get("merchant_name") or ("Uploaded data" if df is not None else
+                  "Upload an invoice to begin"))
+
+def invoice_cost_item(invoice):
+    """Ledger 'Total cost' straight from the invoice (per month)."""
+    def m(key):
+        return invoice[key] / inv_months if invoice.get(key) is not None else None
+    lines = "".join(f'<div class="brk"><span>{label}</span><span>{fmt_money(v)}</span></div>'
+                    for label, v in [("Interchange", m("interchange_fees")), ("Scheme fees", m("scheme_fees")),
+                                     ("Acquiring / processing", m("acquiring_fees")), ("Other", m("other_fees"))]
+                    if v is not None)
+    value, _ = invoice_totals(invoice)
+    rate = (f'<div class="brk rate"><span>Effective rate</span><span>'
+            f'{invoice["total_fees"] / value * 100:.2f}% of revenue</span></div>'
+            if invoice.get("total_fees") is not None and value else "")
+    total = m("total_fees")
+    return ("Total cost", fmt_money(total) if total is not None else "—", "/ mo",
+            lines + rate + '<div class="brk"><span>Source</span><span>Invoice</span></div>')
+
+def build_ledger_items(fees, overall_rate=None, at_risk=0):
+    if df is None and invoice:
+        cost = invoice_cost_item(invoice)
+    else:
+        inv_line = ""
+        if invoice and invoice.get("total_fees") is not None:
+            value, _ = invoice_totals(invoice)
+            rate = f' · {invoice["total_fees"] / value * 100:.2f}%' if value else ""
+            inv_line = (f'<div class="brk rate"><span>Invoice actual</span>'
+                        f'<span>{fmt_money(invoice["total_fees"] / inv_months)}{rate}</span></div>')
+        cost = ("Total cost", fmt_money(fees["total"]) if fees else "—", "/ mo",
+                (f'<div class="brk"><span>Interchange</span><span>{fmt_money(fees["interchange"])}</span></div>'
+                 f'<div class="brk"><span>Scheme fees</span><span>{fmt_money(fees["scheme"])}</span></div>'
+                 f'<div class="brk"><span>Acquiring / processing</span><span>{fmt_money(fees["acquiring"])}</span></div>'
+                 f'<div class="brk rate"><span>Effective rate</span><span>'
+                 f'{(fees["total"] / monthly_revenue * 100 if monthly_revenue else 0):.2f}% of revenue</span></div>'
+                 + inv_line)
+                if fees else ("Calculating…" if df is not None else "Upload an invoice to see fees") + inv_line)
+    volume_sub = (f"Approval rate {overall_rate:.1f}%" if overall_rate is not None
+                  else ("From the invoice" if invoice else "Upload an invoice to populate"))
+    return [
+        ("Revenue", fmt_money(monthly_revenue) if monthly_revenue is not None else "—", "/ mo",
+         ("Approved card sales" if df is not None else "Card sales on the invoice" if invoice else "Card sales")
+         + (f" · est. {fmt_money(at_risk)} lost to declines" if at_risk > 0 else "")),
+        ("Volume", f"{monthly_volume:,.0f}" if monthly_volume is not None else "—", "txns / mo", volume_sub),
+        ("ATV", f"${atv:,.2f}" if atv is not None else "—", "", "Average transaction value"),
+        cost,
+    ]
+
+# Sidebar ledger is drawn straight away so it's always there, then refreshed at the end with fees
+ledger_slot = st.sidebar.empty()
+ledger_slot.markdown(ledger_html(merchant_label, build_ledger_items(
+    None, (df["status"] == "approved").mean() * 100 if df is not None else None)), unsafe_allow_html=True)
+
+# ----- Shared renderers -----
+def split_bar(shares):
+    ordered = sorted(shares.items(), key=lambda kv: kv[0] != "Eftpos")
+    segs = "".join(f'<div style="width:{v:.1f}%;background:{SCHEME_COLOURS.get(n, MUTED)}" title="{n} {v:.0f}%"></div>'
+                   for n, v in ordered if v >= 0.5)
+    to = "".join(f'<span>→ {logo(n, 16)} <b>{v:.0f}%</b></span>' for n, v in ordered if v >= 0.5)
+    return f'<div class="split">{segs}</div><div class="route-to">{to}</div>'
+
+def routing_rows(rows, n_months):
+    return "".join(
+        f'<div class="route-row"><div class="route-head"><span>{logo(m, 20)}&nbsp; {m} debit</span>'
+        f'<span class="muted">{count / n_months:,.0f} txns/mo</span></div>{split_bar(shares)}</div>'
+        for m, count, shares in rows)
+
+def render_payment_mix(mix, n_months, caption):
+    """Donut per card type (debit / credit, or 'all' when the source doesn't split them) by scheme value."""
+    types = [t for t in ["debit", "credit", "all"] if t in set(mix["card_type"])]
+    total = max(mix["value"].sum(), 1)
+    fig = make_subplots(rows=1, cols=max(len(types), 1), specs=[[{"type": "domain"}] * max(len(types), 1)])
+    present = []
+    for i, ct in enumerate(types):
+        part = mix[mix["card_type"] == ct].groupby("scheme")[["value", "count"]].sum().sort_values("value", ascending=False)
+        present += [m for m in part.index if m not in present]
+        fig.add_trace(go.Pie(
+            labels=part.index, values=part["value"], hole=0.58, sort=False, direction="clockwise",
+            marker=dict(colors=[SCHEME_COLOURS.get(m, MUTED) for m in part.index], line=dict(color=CARD, width=2)),
+            texttemplate="%{percent:.0%}", textposition="inside", insidetextorientation="horizontal",
+            textfont=dict(color="#FFFFFF", size=11), customdata=part["count"] / n_months,
+            hovertemplate="%{label}<br><b>%{percent}</b> of " + ct + " value<br>%{customdata:,.0f} txns/mo<extra></extra>"),
+            1, i + 1)
+        share = mix.loc[mix["card_type"] == ct, "value"].sum() / total * 100
+        x = sum(fig.data[-1].domain.x) / 2      # centre of this donut, so the label sits in its hole
+        fig.add_annotation(text=f"<b>{'All cards' if ct == 'all' else ct.title()}</b><br>{share:.0f}%", showarrow=False,
+                           x=x, y=0.5, xref="paper", yref="paper", font=dict(size=13, color=INK))
+    style_chart(fig, height=250)
+    fig.update_layout(margin=dict(l=0, r=0, t=4, b=4))
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+    st.markdown('<div class="scheme-legend">' + "".join(
+        f'<span><span class="sw" style="background:{SCHEME_COLOURS.get(m, MUTED)}"></span>{logo(m, 18)} {m}</span>'
+        for m in present) + "</div>", unsafe_allow_html=True)
+    st.caption(caption)
+
+# ----- Welcome (nothing uploaded yet) -----
+if df is None and invoice is None:
+    with st.container(key="card_welcome"):
+        card_title("Get Started")
+        st.markdown(
+            '<div class="empty-state"><div class="big">Upload a merchant invoice or statement (PDF) above</div>'
+            "Claude reads the fees, card mix and routing from it, fills in the key-metrics ledger, and works out "
+            "the merchant's position under the 1 October 2026 RBA reform.<br><br>"
+            "Optionally add a transactions CSV for approval rates, decline analysis and transaction-level routing.</div>",
+            unsafe_allow_html=True)
+        st.download_button("Download transactions CSV template", CSV_TEMPLATE, file_name="transactions_template.csv",
+                           mime="text/csv")
+
+# ----- Row 1: payment mix, current and suggested routing -----
 is_surcharging, surcharge_rate = False, 0.0
-debit = None
+debit = inv_routing = None
+overall_rate, at_risk = None, 0
 if df is not None:
     stats = build_data_summary(df)
-    monthly = stats["monthly"]
     overall_rate = (df["status"] == "approved").mean() * 100
-    first_rate, last_rate = monthly["approval_rate"].iloc[0], monthly["approval_rate"].iloc[-1]
-    first_label = pd.Period(monthly["month"].iloc[0]).strftime("%b %Y")
-    last_label = pd.Period(monthly["month"].iloc[-1]).strftime("%b %Y")
-    first_count, last_count = monthly["transactions"].iloc[0], monthly["transactions"].iloc[-1]
-    change = last_rate - first_rate
-    at_risk = max(calculate_revenue_impact(last_rate, first_rate, stats["monthly_txn_count"],
-                                           stats["avg_transaction_value"])["estimated_monthly_revenue_impact"], 0)
-    approved = df[df["status"] == "approved"]
     debit = analyse_debit_routing(df)
+elif invoice:
+    inv_routing = invoice_debit_routing(invoice, inv_months)
 
-    def split_bar(shares):
-        segs = "".join(f'<div style="width:{v:.1f}%;background:{SCHEME_COLOURS.get(n, MUTED)}" title="{n} {v:.0f}%"></div>'
-                       for n, v in sorted(shares.items(), key=lambda kv: kv[0] != "Eftpos") if v >= 0.5)
-        to = "".join(f'<span>→ {logo(n, 16)} <b>{v:.0f}%</b></span>'
-                     for n, v in sorted(shares.items(), key=lambda kv: kv[0] != "Eftpos") if v >= 0.5)
-        return f'<div class="split">{segs}</div><div class="route-to">{to}</div>'
-
-    def routing_rows(rows):
-        return "".join(
-            f'<div class="route-row"><div class="route-head"><span>{logo(m, 20)}&nbsp; {m} debit</span>'
-            f'<span class="muted">{count / n_months:,.0f} txns/mo</span></div>{split_bar(shares)}</div>'
-            for m, count, shares in rows)
-
+if df is not None or invoice:
     r1c1, r1c2, r1c3 = st.columns(3, gap="medium")
     with r1c1:
         with st.container(key="card_mix"):
             card_title("Payment Mix")
-            known = approved[approved["card_type"].isin(["debit", "credit"])]
-            type_share = known.groupby("card_type")["amount"].sum() / max(known["amount"].sum(), 1) * 100
-            fig = make_subplots(rows=1, cols=2, specs=[[{"type": "domain"}, {"type": "domain"}]])
-            present = []
-            for i, ct in enumerate(["debit", "credit"]):
-                part = known[known["card_type"] == ct].groupby("payment_method")["amount"].agg(["sum", "count"])
-                part = part.sort_values("sum", ascending=False)
-                present += [m for m in part.index if m not in present]
-                fig.add_trace(go.Pie(
-                    labels=part.index, values=part["sum"], hole=0.58, sort=False, direction="clockwise",
-                    marker=dict(colors=[SCHEME_COLOURS.get(m, MUTED) for m in part.index],
-                                line=dict(color=CARD, width=2)),
-                    texttemplate="%{percent:.0%}", textposition="inside", insidetextorientation="horizontal",
-                    textfont=dict(color="#FFFFFF", size=11),
-                    customdata=part["count"] / n_months,
-                    hovertemplate="%{label}<br><b>%{percent}</b> of " + ct + " value<br>"
-                                  "%{customdata:,.0f} txns/mo<extra></extra>"), 1, i + 1)
-            for i, ct in enumerate(["debit", "credit"]):
-                fig.add_annotation(text=f"<b>{ct.title()}</b><br>{type_share.get(ct, 0):.0f}%", showarrow=False,
-                                   x=0.19 + i * 0.62, y=0.5, xref="paper", yref="paper",
-                                   font=dict(size=13, color=INK))
-            style_chart(fig, height=250)
-            fig.update_layout(margin=dict(l=0, r=0, t=4, b=4))
-            st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
-            st.markdown('<div class="scheme-legend">' + "".join(
-                f'<span><span class="sw" style="background:{SCHEME_COLOURS.get(m, MUTED)}"></span>{logo(m, 18)} {m}</span>'
-                for m in present) + "</div>", unsafe_allow_html=True)
-            unknown = (approved["card_type"] == "unknown").mean() * 100
-            wallet_share = approved["wallet"].notna().mean() * 100 if "wallet" in approved else 0
-            st.caption("Share of approved transaction value by scheme." +
-                       (f" Apple Pay ({wallet_share:.0f}% of transactions) is counted under the card's scheme."
-                        if wallet_share > 0 else "") +
-                       (f" {unknown:.0f}% of transactions have no card type - add a `card_type` column."
-                        if unknown > 0 else ""))
+            if df is not None:
+                approved = df[df["status"] == "approved"]
+                known = approved[approved["card_type"].isin(["debit", "credit"])]
+                mix = known.groupby(["payment_method", "card_type"])["amount"].agg(["sum", "count"]).reset_index()
+                mix.columns = ["scheme", "card_type", "value", "count"]
+                unknown = (approved["card_type"] == "unknown").mean() * 100
+                wallet_share = approved["wallet"].notna().mean() * 100 if "wallet" in approved else 0
+                caption = ("Share of approved transaction value by scheme."
+                           + (f" Apple Pay ({wallet_share:.0f}% of transactions) is counted under the card's scheme."
+                              if wallet_share > 0 else "")
+                           + (f" {unknown:.0f}% of transactions have no card type - add a `card_type` column."
+                              if unknown > 0 else ""))
+            else:
+                mix = invoice_mix(invoice)
+                caption = "Share of card sales by scheme, from the invoice."
+            if mix.empty:
+                empty_state("No scheme breakdown", "The data doesn't split sales by card scheme.")
+            else:
+                render_payment_mix(mix, n_months, caption)
 
     with r1c2:
         with st.container(key="card_routing_now"):
             card_title("Current Debit Routing")
-            if debit is None or debit.empty:
-                empty_state("No routing data", "Add a <code>network</code> column (eftpos / visa / mastercard) "
-                            "showing which network each transaction was processed on.")
-            else:
+            if df is not None and debit is not None and not debit.empty:
                 lcr_now = (debit["network"] == "Eftpos").mean() * 100
-                st.markdown(routing_rows(routing_split(debit, "network")), unsafe_allow_html=True)
+                st.markdown(routing_rows(routing_split(debit, "network"), n_months), unsafe_allow_html=True)
                 st.markdown(f'<div class="highlight"><span class="lbl">Debit routed<br>via eftpos today:</span>'
                             f'<span class="num">{lcr_now:.0f}%</span></div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="route-note">Interchange on debit today: '
                             f'{fmt_money(debit["cost_today"].sum() / n_months)}/mo · '
                             f'{fmt_money(debit["cost_post_current"].sum() / n_months)}/mo from 1 Oct on this routing. '
-                            f'Credit always runs on its own scheme. Apple Pay is included under each card.</div>',
+                            f'Credit always runs on its own scheme.</div>', unsafe_allow_html=True)
+            elif inv_routing:
+                rows = "".join(
+                    f'<div class="route-row"><div class="route-head"><span>{logo(l["scheme"], 20)}&nbsp; '
+                    f'{l["scheme"]} debit</span><span class="muted">{fmt_money(l["value"])}/mo'
+                    + (f' · avg ${l["avg"]:,.0f}' if l["avg"] else "") + '</span></div></div>'
+                    for l in inv_routing["lines"])
+                st.markdown(f'<div class="route-note">Debit sales by the network they ran on:</div>'
+                            f'{split_bar(inv_routing["now"])}{rows}', unsafe_allow_html=True)
+                st.markdown(f'<div class="highlight"><span class="lbl">Debit routed<br>via eftpos today:</span>'
+                            f'<span class="num">{inv_routing["now"].get("Eftpos", 0):.0f}%</span></div>',
                             unsafe_allow_html=True)
+            else:
+                empty_state("No debit breakdown", "Routing needs debit sales split by network - either an invoice "
+                            "that itemises eftpos / Visa debit / Mastercard debit, or a transactions CSV with a "
+                            "<code>network</code> column.")
 
     with r1c3:
         with st.container(key="card_routing_next"):
             card_title("Suggested Routing · 1 Oct")
-            if debit is None or debit.empty:
-                empty_state("No routing data", "Suggestions need the <code>network</code> column.")
-            else:
+            if df is not None and debit is not None and not debit.empty:
                 lcr_next = (debit["suggested"] == "Eftpos").mean() * 100
-                st.markdown(routing_rows(routing_split(debit, "suggested")), unsafe_allow_html=True)
+                st.markdown(routing_rows(routing_split(debit, "suggested"), n_months), unsafe_allow_html=True)
                 st.markdown(f'<div class="route-note">Send dual-network debit via eftpos when the sale is '
                             f'${LCR_THRESHOLD:,.0f} or more (5¢ vs up to 8¢); smaller sales stay on the card\'s '
                             f'scheme. {lcr_next:.0f}% of debit via eftpos.</div>', unsafe_allow_html=True)
+            elif inv_routing:
+                st.markdown(f'<div class="route-note">Debit sales after least-cost routing:</div>'
+                            f'{split_bar(inv_routing["next"])}', unsafe_allow_html=True)
+                rows = "".join(
+                    f'<div class="route-row"><div class="route-head"><span>{logo(l["scheme"], 20)}&nbsp; '
+                    f'{l["scheme"]} debit → {logo(l["suggested"], 16)}</span><span class="muted">'
+                    + ("already eftpos" if l["scheme"] == "Eftpos" else
+                       ("route via eftpos" if l["suggested"] == "Eftpos" else
+                        ("avg under $10 - keep" if l["avg"] else "no txn count")))
+                    + '</span></div></div>' for l in inv_routing["lines"])
+                st.markdown(rows, unsafe_allow_html=True)
+                st.markdown(f'<div class="highlight"><span class="lbl">Interchange saving<br>from 1 Oct:</span>'
+                            f'<span class="num">+{fmt_money(inv_routing["saving"])}/mo</span></div>',
+                            unsafe_allow_html=True)
+                st.markdown(f'<div class="route-note">Eftpos is cheaper for debit sales of ${LCR_THRESHOLD:,.0f}+ '
+                            f'(5¢ vs up to the 8¢ cap). Based on each line\'s average sale.'
+                            + (" Some lines have no transaction count, so their saving isn't included."
+                               if inv_routing["unknown_avg"] else "") + '</div>', unsafe_allow_html=True)
+            else:
+                empty_state("No debit breakdown", "Suggestions need debit sales split by network.")
 
     # Surcharge impact of the 1 Oct ban, net of the routing saving
     with st.container(key="card_surcharge"):
@@ -1145,7 +1227,18 @@ if df is not None:
             is_surcharging = st.checkbox("Merchant surcharges today", value=True, key="surcharging")
             surcharge_rate = st.number_input("Current surcharge %", min_value=0.0, max_value=5.0, value=1.0,
                                              step=0.1, disabled=not is_surcharging, key="surcharge_rate")
-        imp = surcharge_impact(df, debit, n_months, is_surcharging, surcharge_rate)
+        if df is not None:
+            base = surcharge_base_from_df(df, n_months)
+            saving = ((debit["cost_post_current"].sum() - debit["cost_post_suggested"].sum()) / n_months
+                      if debit is not None else 0.0)
+        else:
+            lines = invoice.get("schemes", [])
+            covered = sum(l.get("value") or 0 for l in lines if l["scheme"] in SURCHARGE_BAN_NETWORKS)
+            value, _ = invoice_totals(invoice)
+            amex = sum(l.get("value") or 0 for l in lines if l["scheme"] == "Amex")
+            base = (covered if covered else max((value or 0) - amex, 0)) / n_months
+            saving = inv_routing["saving"] if inv_routing else 0.0
+        imp = surcharge_impact(base, monthly_revenue, saving, is_surcharging, surcharge_rate)
         with i2:
             st.markdown(
                 f'<div class="impact">'
@@ -1165,6 +1258,16 @@ if df is not None:
                    if imp["net"] < 0 else '<div class="route-note">Routing savings cover the change.</div>'),
                 unsafe_allow_html=True)
 
+# ----- Row 2: approval performance (needs transaction-level data) -----
+if df is not None:
+    monthly = stats["monthly"]
+    first_rate, last_rate = monthly["approval_rate"].iloc[0], monthly["approval_rate"].iloc[-1]
+    first_label = pd.Period(monthly["month"].iloc[0]).strftime("%b %Y")
+    last_label = pd.Period(monthly["month"].iloc[-1]).strftime("%b %Y")
+    first_count, last_count = monthly["transactions"].iloc[0], monthly["transactions"].iloc[-1]
+    change = last_rate - first_rate
+    at_risk = max(calculate_revenue_impact(last_rate, first_rate, stats["monthly_txn_count"],
+                                           stats["avg_transaction_value"])["estimated_monthly_revenue_impact"], 0)
     r2c1, r2c2, r2c3 = st.columns(3, gap="medium")
     with r2c1:
         with st.container(key="card_growth"):
@@ -1190,66 +1293,74 @@ if df is not None:
         with st.container(key="card_declines"):
             card_title("Decline Reasons")
             declines = stats["declines"]
-            d = declines.sort_values().reset_index()
-            d.columns = ["reason", "count"]
-            total = declines.sum() or 1
-            d["share"] = d["count"] / total * 100
-            fig2 = px.bar(d, x="count", y="reason", orientation="h", text=d["share"].map(lambda v: f"{v:.0f}%"),
-                          color_discrete_sequence=[ORANGE])
-            fig2.update_traces(marker_line_width=0, textposition="outside", cliponaxis=False,
-                               textfont=dict(color=INK, size=12),
-                               hovertemplate="%{y}<br><b>%{x:,}</b> declines<extra></extra>")
-            style_chart(fig2, height=260).update_layout(bargap=0.35)
-            fig2.update_xaxes(showgrid=True, gridcolor="#EFE6D6", range=[0, d["count"].max() * 1.2])
-            st.plotly_chart(fig2, width="stretch", config={"displayModeBar": False})
+            if declines.empty:
+                empty_state("No declines", "No declined transactions in the data.")
+            else:
+                d = declines.sort_values().reset_index()
+                d.columns = ["reason", "count"]
+                d["share"] = d["count"] / (declines.sum() or 1) * 100
+                fig2 = px.bar(d, x="count", y="reason", orientation="h", text=d["share"].map(lambda v: f"{v:.0f}%"),
+                              color_discrete_sequence=[ORANGE])
+                fig2.update_traces(marker_line_width=0, textposition="outside", cliponaxis=False,
+                                   textfont=dict(color=INK, size=12),
+                                   hovertemplate="%{y}<br><b>%{x:,}</b> declines<extra></extra>")
+                style_chart(fig2, height=260).update_layout(bargap=0.35)
+                fig2.update_xaxes(showgrid=True, gridcolor="#EFE6D6", range=[0, d["count"].max() * 1.2])
+                st.plotly_chart(fig2, width="stretch", config={"displayModeBar": False})
 
+# ----- Ask the agent (invoice and/or transactions) -----
+if df is not None or invoice:
     with st.container(key="card_agent"):
         card_title("Ask the Agent")
         a1, a2 = st.columns([2, 3], gap="medium")
         with a1:
-            default_q = "Analyse this merchant's payment performance, quantify the revenue impact of any decline, and give prioritised recommendations."
-            question = st.text_area("Question", value=default_q, height=110, label_visibility="collapsed")
+            default_q = ("Analyse this merchant's payment performance, quantify the revenue impact of any decline, "
+                         "and give prioritised recommendations." if df is not None else
+                         "Review this merchant's fees and debit routing ahead of the 1 October reform, quantify the "
+                         "savings available, and give prioritised recommendations.")
+            question = st.text_area("Question", value=default_q, height=110, label_visibility="collapsed",
+                                    key=f"question_{df is not None}")
             if st.button("Run analysis", type="primary", width="stretch"):
                 try:
                     with st.spinner("Agent is analysing..."):
-                        answer, tool_log = run_agent(df, question)
-                    st.session_state["analysis"] = {"source": source, "answer": answer, "tool_log": tool_log}
+                        answer, tool_log = run_agent(df, question, invoice)
+                    st.session_state["analysis"] = {"key": data_key, "answer": answer, "tool_log": tool_log}
                 except Exception as e:
                     st.error(_describe_api_error(e) if isinstance(e, anthropic.APIError)
                              else f"The analysis couldn't run ({type(e).__name__}: {redact(str(e))[:160]}).")
         with a2:
             analysis = st.session_state.get("analysis")
             with st.container(height=200, border=False):
-                if analysis and analysis["source"] == source:
+                if analysis and analysis["key"] == data_key:
                     st.markdown(analysis["answer"])
                     if analysis["tool_log"]:
                         with st.expander(f"How this was calculated ({len(analysis['tool_log'])} tool calls)"):
                             for t in analysis["tool_log"]:
                                 st.code(t)
                 else:
-                    st.caption("Ask a question about this merchant's data and the agent's answer will appear here.")
-else:
-    with st.container(key="card_nodata"):
-        card_title("Performance")
-        empty_state("Upload a transaction CSV to begin",
-                    "Needs columns: date, amount, payment_method, status, decline_reason "
-                    "(optional: card_type, network). Download the template above for an example.")
+                    st.caption("Ask a question about this merchant and the agent's answer will appear here.")
 
-# Routing Advisor defaults from the data, so both sections describe the same merchant
+# Routing Advisor defaults from the data, so every section describes the same merchant
 def _int_split(shares):
     vals = [int(round(v)) for v in shares]
     vals[-1] = 100 - sum(vals[:-1])
     return vals
 
-if debit is not None and not debit.empty and monthly_revenue:
+adv_eftpos, adv_visa, adv_mc, adv_debit_pct = 35, 40, 25, 60
+adv_avg_debit = float(round(atv, 2)) if atv else 45.0
+if df is not None and debit is not None and not debit.empty and monthly_revenue:
     _net_share = debit["network"].value_counts(normalize=True) * 100
     adv_eftpos, adv_visa, adv_mc = _int_split([_net_share.get("Eftpos", 0), _net_share.get("Visa", 0),
                                                _net_share.get("Mastercard", 0)])
     adv_debit_pct = int(round(debit["amount"].sum() / n_months / monthly_revenue * 100))
     adv_avg_debit = float(round(debit["amount"].mean(), 2))
-else:
-    adv_eftpos, adv_visa, adv_mc, adv_debit_pct = 35, 40, 25, 60
-    adv_avg_debit = float(round(atv, 2)) if atv else 45.0
+elif inv_routing and monthly_revenue:
+    adv_eftpos, adv_visa, adv_mc = _int_split([inv_routing["now"].get("Eftpos", 0), inv_routing["now"].get("Visa", 0),
+                                               inv_routing["now"].get("Mastercard", 0)])
+    adv_debit_pct = min(int(round(inv_routing["total"] / monthly_revenue * 100)), 100)
+    _dtx = sum(l["txns"] for l in inv_routing["lines"])
+    if _dtx:
+        adv_avg_debit = float(round(inv_routing["total"] / _dtx, 2))
 
 # ----- Row 3: routing advisor -----
 r3c1, r3c2, r3c3 = st.columns(3, gap="medium")
@@ -1257,18 +1368,18 @@ r3c1, r3c2, r3c3 = st.columns(3, gap="medium")
 with r3c1:
     with st.container(key="card_merchant"):
         card_title("Routing Advisor")
-        with st.form("routing_form", border=False):
-            merchant_name = st.text_input("Merchant name", value="Merchant A")
+        with st.form(f"routing_form_{data_key}", border=False):
+            merchant_name = st.text_input("Merchant name", value=(invoice or {}).get("merchant_name") or "Merchant A")
             monthly_turnover = st.number_input("Monthly turnover ($)", min_value=0.0, step=1000.0, format="%.0f",
                                                value=float(round(monthly_revenue, -3)) if monthly_revenue else 100000.0)
             f3, f4 = st.columns(2)
             debit_pct = f3.number_input("Dual-network debit %", min_value=0, max_value=100, value=adv_debit_pct)
-            avg_debit_value = f4.number_input("Avg debit txn ($)", min_value=1.0, value=adv_avg_debit)
+            avg_debit_value = f4.number_input("Avg debit txn ($)", min_value=1.0, value=max(adv_avg_debit, 1.0))
             c1, c2, c3 = st.columns(3)
             eftpos_share_pct = c1.number_input("Eftpos %", min_value=0, max_value=100, value=adv_eftpos)
             visa_share_pct = c2.number_input("Visa %", min_value=0, max_value=100, value=adv_visa)
             mastercard_share_pct = c3.number_input("Mastercard %", min_value=0, max_value=100, value=adv_mc)
-            if df is None:
+            if df is None and not invoice:
                 is_surcharging = st.checkbox("Merchant currently surcharges card payments")
             else:
                 st.caption("Surcharging is set in the Surcharge Impact card.")
@@ -1335,15 +1446,15 @@ if invoice:
         v1, v2, v3 = st.columns([2, 3, 3], gap="large", vertical_alignment="center")
         period = " – ".join(p for p in [invoice.get("period_start"), invoice.get("period_end")] if p) or "not stated"
         pricing = {"interchange_plus_plus": "Interchange++ (itemised)", "blended": "Blended MSF",
-                   "unknown": "Not clear"}[invoice.get("pricing_model", "unknown")]
+                   "unknown": "Not clear"}.get(invoice.get("pricing_model", "unknown"), "Not clear")
+        inv_value, _ = invoice_totals(invoice)
         with v1:
             st.markdown(
                 f'<div class="impact"><div class="line"><span>Merchant</span><b>{invoice.get("merchant_name") or "—"}</b></div>'
                 f'<div class="line"><span>Period</span><b>{period}</b></div>'
                 f'<div class="line"><span>Pricing</span><b>{pricing}</b></div>'
-                f'<div class="line"><span>Card sales</span><b>'
-                f'{fmt_money(invoice["total_card_value"]) if invoice.get("total_card_value") is not None else "—"}'
-                f'</b></div></div>', unsafe_allow_html=True)
+                f'<div class="line"><span>Card sales</span><b>{fmt_money(inv_value) if inv_value else "—"}</b></div>'
+                f'</div>', unsafe_allow_html=True)
         with v2:
             def _amt(key):
                 return fmt_money(invoice[key]) if invoice.get(key) is not None else "—"
@@ -1356,16 +1467,17 @@ if invoice:
                 f'<div class="line"><span><b>Total fees</b></span><b>{_amt("total_fees")}</b></div></div>',
                 unsafe_allow_html=True)
         with v3:
-            if invoice.get("total_fees") is not None and invoice.get("total_card_value"):
+            if invoice.get("total_fees") is not None and inv_value:
                 st.markdown(f'<div class="highlight"><span class="lbl">Effective<br>rate:</span>'
-                            f'<span class="num">{invoice["total_fees"] / invoice["total_card_value"] * 100:.2f}%</span>'
+                            f'<span class="num">{invoice["total_fees"] / inv_value * 100:.2f}%</span>'
                             f'</div>', unsafe_allow_html=True)
-            applied = ", ".join(invoice_overrides) or "none"
-            st.markdown(f'<div class="route-note">Rates applied to the fee table: {applied}.'
+            note = (f"Rates applied to the fee table: {', '.join(invoice_overrides) or 'none'}." if df is not None
+                    else "Add a transactions CSV to estimate fees transaction by transaction.")
+            st.markdown(f'<div class="route-note">{note}'
                         + (f' {invoice["notes"]}' if invoice.get("notes") else "") + '</div>',
                         unsafe_allow_html=True)
 
-# ----- Row 5: fee assumptions (drive Total cost in the ledger) -----
+# ----- Row 5: fee assumptions (estimates from transactions; needs the CSV) -----
 fees = None
 if df is not None:
     with st.container(key="card_fees"):
@@ -1373,22 +1485,19 @@ if df is not None:
         st.caption("Rates used to estimate monthly fees on approved transactions. "
                    + ("Rows marked 'Invoice' come from the uploaded invoice; the rest are illustrative. "
                       if invoice_overrides else
-                      "Starting values are illustrative - upload an invoice in the sidebar or edit them to match the "
+                      "Starting values are illustrative - upload an invoice above or edit them to match the "
                       "merchant's actual pricing. ")
                    + "% applies to transaction value, ¢ per transaction. Unlisted payment methods use the 'Other' row.")
         fee_table = st.data_editor(
             default_fee_table(sorted(df["payment_method"].dropna().unique()), invoice_overrides),
-            key=f"fees_{source}_{invoice_key}", hide_index=True, width="stretch", num_rows="fixed",
+            key=f"fees_{data_key}", hide_index=True, width="stretch", num_rows="fixed",
             disabled=["Payment method", "Source"],
             column_config={c: st.column_config.NumberColumn(c, min_value=0.0, step=0.01, format="%.2f")
                            for c in FEE_COLUMNS})
         fees = compute_fees(df, fee_table, n_months)
 
 # ----- Key-metrics ledger (sidebar, so it stays put on every page) -----
-
-ledger_slot.markdown(ledger_html(source_names.get(source, source),
-                                 build_ledger_items(fees, overall_rate if df is not None else None,
-                                                    at_risk if df is not None else 0, invoice)),
+ledger_slot.markdown(ledger_html(merchant_label, build_ledger_items(fees, overall_rate, at_risk)),
                      unsafe_allow_html=True)
 
 st.markdown('<div class="site-footer">Payments Consultant · analysis grounded in real calculation</div>',
