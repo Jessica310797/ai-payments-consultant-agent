@@ -7,6 +7,21 @@ the key-metrics ledger, payment mix, current and suggested debit routing, surcha
 Routing Advisor. Add a **transactions CSV** (optional) for approval rates, decline analysis and transaction-level
 routing and fee estimates.
 
+## How the 1 October reform impact is worked out
+
+The Suggested Routing card splits the merchant's fees into **interchange**, **scheme fees** and **processing**, using
+the best source available: fee columns in the transactions file, else the invoice, else the Fee Assumptions rates.
+
+1. **Today** - fees as they are.
+2. **1 Oct** - interchange moves to the caps (debit/prepaid 8c per transaction, consumer credit 0.3% of value;
+   Amex isn't capped). Scheme fees and processing stay the same.
+3. **+ routing** - each dual-network debit payment on Visa/Mastercard moves to eftpos where eftpos interchange +
+   scheme fee is cheaper than the scheme's post-reform interchange + scheme fee. Eftpos costs come from the
+   merchant's own eftpos transactions when there are any, else the rate table. Processing stays the same.
+
+Each column shows the total and effective rate (total fees / card sales). On blended pricing, interchange and
+scheme fees are estimated within the MSF, and the saving depends on the acquirer passing it through.
+
 ## Transaction data
 
 Optional. Upload a transactions export as **CSV, TSV, Excel (.xlsx) or JSON**, in whatever layout your bank,
