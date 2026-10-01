@@ -66,6 +66,8 @@ h1, h2, h3, h4 {{ color: {INK} !important; letter-spacing: -0.01em; }}
 .st-key-hero [data-testid="stButtonGroup"] button[aria-checked="true"] {{ background: {ORANGE}; border-color: {ORANGE}; }}
 .st-key-hero [data-testid="stButtonGroup"] button:hover {{ border-color: #FFFFFF; }}
 .st-key-hero [data-testid="stButtonGroup"] > div {{ flex-wrap: wrap; row-gap: 6px; }}
+.st-key-inv_edit button {{ background: transparent; border: 1.5px solid #FFFFFF; border-radius: 12px; }}
+.st-key-inv_edit button:hover {{ border-color: {ORANGE}; }}
 .st-key-hero [data-testid="stAlert"] p, .st-key-hero [data-testid="stAlert"] span {{ color: {INK} !important; }}
 .hero .title {{ font-size: 32px; font-weight: 800; line-height: 1.1; color: #FFFFFF; }}
 .hero .subtitle {{ font-size: 14px; color: #D5E3E0 !important; margin-top: 4px; }}
@@ -839,6 +841,99 @@ def debit_network_shares(f, column):
 
 # ---------- INVOICE-DRIVEN ANALYSIS (when there's no transaction CSV) ----------
 
+# ----- "Check the invoice figures": editable draft, checks, and back to an invoice dict -----
+LINE_COLUMNS = ["Scheme", "Debit / credit", "Sales $", "Transactions", "Interchange $", "Scheme fees $", "Acquiring $"]
+TOTAL_FIELDS = [("total_card_value", "Card sales $"), ("total_transactions", "Transactions"),
+                ("interchange_fees", "Interchange $"), ("scheme_fees", "Scheme fees $"),
+                ("acquiring_fees", "Acquiring / processing $"), ("other_fees", "Other fees $"), ("total_fees", "Total fees $")]
+
+def _line_dollars(l, amount_key, pct_key, cents_key=None):
+    """A line's fee in dollars: the stated amount, else worked out from its rate (% of sales, cents per txn)."""
+    if l.get(amount_key) is not None:
+        return float(l[amount_key])
+    pct = l.get(pct_key)
+    cents = l.get(cents_key) if cents_key else None
+    if pct is None and cents is None:
+        return None
+    return (pct or 0) * (l.get("value") or 0) / 100 + (cents or 0) * (l.get("transactions") or 0) / 100
+
+def draft_lines(invoice):
+    rows = []
+    for l in invoice.get("schemes", []):
+        acquiring = _line_dollars(l, "acquiring_amount", "acquiring_pct", "processing_cents")
+        if acquiring is None and invoice.get("pricing_model") == "blended":
+            acquiring = l.get("total_fees_amount")
+        rows.append({"Scheme": l["scheme"], "Debit / credit": l["card_type"], "Sales $": l.get("value"),
+                     "Transactions": l.get("transactions"),
+                     "Interchange $": _line_dollars(l, "interchange_amount", "interchange_pct", "interchange_cents"),
+                     "Scheme fees $": _line_dollars(l, "scheme_fee_amount", "scheme_fee_pct"),
+                     "Acquiring $": acquiring})
+    return pd.DataFrame(rows, columns=LINE_COLUMNS)
+
+def invoice_from_draft(base, fields, lines):
+    """The invoice dict the rest of the app uses, rebuilt from the confirmed figures (fees as dollar amounts)."""
+    def num(v):
+        try:
+            return None if v is None or pd.isna(v) else float(v)
+        except (TypeError, ValueError):
+            return None
+    schemes = []
+    for _, r in lines.iterrows():
+        if not isinstance(r["Scheme"], str) or not r["Scheme"]:
+            continue
+        schemes.append({"scheme": r["Scheme"], "card_type": r["Debit / credit"] or "all", "value": num(r["Sales $"]),
+                        "transactions": num(r["Transactions"]), "interchange_pct": None, "interchange_cents": None,
+                        "scheme_fee_pct": None, "acquiring_pct": None, "processing_cents": None,
+                        "interchange_amount": num(r["Interchange $"]), "scheme_fee_amount": num(r["Scheme fees $"]),
+                        "acquiring_amount": num(r["Acquiring $"]), "total_fees_amount": None})
+    out = {**base, **{k: num(fields.get(k)) for k, _ in TOTAL_FIELDS}, "schemes": schemes,
+           "merchant_name": fields.get("merchant_name") or None, "acquirer": fields.get("acquirer") or None,
+           "period_start": fields.get("period_start"), "period_end": fields.get("period_end"),
+           "pricing_model": fields.get("pricing_model", base.get("pricing_model", "unknown")), "confirmed": True}
+    return out
+
+def invoice_checks(inv):
+    """Things that suggest a figure was misread: (level, message), level 'warn' or 'info'."""
+    out = []
+    lines = inv.get("schemes", [])
+    def total(key):
+        vals = [l.get(key) for l in lines if l.get(key) is not None]
+        return sum(vals) if vals else None
+    def close(a, b, tol=0.015):
+        return a is None or b is None or abs(a - b) <= max(abs(b) * tol, 1)
+    lines_sales, card_sales = total("value"), inv.get("total_card_value")
+    if not close(lines_sales, card_sales):
+        out.append(("warn", f"Scheme lines add up to {fmt_money(lines_sales)} of sales, but card sales total is "
+                            f"{fmt_money(card_sales)}."))
+    parts = [inv.get(k) for k in ("interchange_fees", "scheme_fees", "acquiring_fees", "other_fees")]
+    if inv.get("total_fees") is not None and any(p is not None for p in parts):
+        parts_sum = sum(p or 0 for p in parts)
+        if not close(parts_sum, inv["total_fees"]):
+            out.append(("warn", f"Interchange + scheme + acquiring + other = {fmt_money(parts_sum)}, but total fees "
+                                f"is {fmt_money(inv['total_fees'])}."))
+    for key, line_key, label in [("interchange_fees", "interchange_amount", "Interchange"),
+                                 ("scheme_fees", "scheme_fee_amount", "Scheme fees"),
+                                 ("acquiring_fees", "acquiring_amount", "Acquiring")]:
+        if not close(total(line_key), inv.get(key)):
+            out.append(("warn", f"{label} on the scheme lines adds up to {fmt_money(total(line_key))}, but the "
+                                f"{label.lower()} total is {fmt_money(inv[key])}."))
+    value = card_sales or lines_sales
+    if inv.get("total_fees") is not None and value:
+        rate = inv["total_fees"] / value * 100
+        if rate < 0.2 or rate > 4:
+            out.append(("warn", f"Effective rate of {rate:.2f}% is unusual for card acceptance - check total fees "
+                                "and card sales."))
+    if not inv.get("period_start") or not inv.get("period_end"):
+        out.append(("info", "No statement period - figures will be treated as one month."))
+    if lines and not any(l.get("transactions") for l in lines):
+        out.append(("info", "No transaction counts - the 8c debit cap and routing are less accurate without them."))
+    if lines and not any(l.get("card_type") in ("debit", "credit") for l in lines if l["scheme"] in ("Visa", "Mastercard")):
+        out.append(("info", "Visa/Mastercard aren't split into debit and credit - the reform caps and routing need "
+                            "that split. Set 'Debit / credit' on those lines if the statement shows it."))
+    if not lines:
+        out.append(("warn", "No scheme lines were found - add them from the statement for the payment mix and routing."))
+    return out
+
 def invoice_months(invoice):
     """Length of the invoice period in months (at least 1), used to express figures per month."""
     try:
@@ -1530,6 +1625,98 @@ if uploaded is not None:
                     st.session_state[override_key] = changed
                     st.rerun()
 data_key = f"{invoice_key}|{uploaded.file_id if uploaded is not None else 'none'}"
+
+# ----- Check the invoice figures before anything is worked out from them -----
+def _as_date(v):
+    try:
+        return pd.to_datetime(v).date() if v else None
+    except Exception:
+        return None
+
+if invoice is not None:
+    confirmed_key, draft_key = f"inv_confirmed_{invoice_key}", f"inv_draft_{invoice_key}"
+    confirmed = st.session_state.get(confirmed_key)
+    if confirmed is None:
+        draft = st.session_state.get(draft_key, invoice)
+        with st.container(key="card_confirm"):
+            card_title("Check the Invoice Figures")
+            st.markdown('<div class="route-note" style="text-align:center;font-size:13px">Claude has read the '
+                        'statement. Check these figures against it and correct anything that\'s wrong - the '
+                        'dashboard only uses what you confirm here.</div>', unsafe_allow_html=True)
+            checks = invoice_checks(draft)
+            if checks:
+                for level, msg in checks:
+                    (st.warning if level == "warn" else st.info)(msg, icon="⚠️" if level == "warn" else "ℹ️")
+            else:
+                st.success("The totals and scheme lines agree with each other.", icon="✅")
+            with st.form(f"confirm_form_{invoice_key}", border=False):
+                c1, c2, c3, c4, c5 = st.columns([3, 3, 2, 2, 2])
+                fields = {
+                    "merchant_name": c1.text_input("Merchant", value=draft.get("merchant_name") or ""),
+                    "acquirer": c2.text_input("Acquirer / provider", value=draft.get("acquirer") or ""),
+                    "period_start": c3.date_input("Period from", value=_as_date(draft.get("period_start")),
+                                                  format="DD/MM/YYYY"),
+                    "period_end": c4.date_input("Period to", value=_as_date(draft.get("period_end")),
+                                                format="DD/MM/YYYY"),
+                }
+                models = ["interchange_plus_plus", "blended", "unknown"]
+                model_names = {"interchange_plus_plus": "Interchange++ (itemised)", "blended": "Blended (one MSF rate)",
+                               "unknown": "Not clear"}
+                fields["pricing_model"] = c5.selectbox(
+                    "Pricing", models, format_func=model_names.get,
+                    index=models.index(draft.get("pricing_model")) if draft.get("pricing_model") in models else 2)
+                for k in ("period_start", "period_end"):
+                    fields[k] = fields[k].isoformat() if fields[k] else None
+                st.markdown("**Statement totals**")
+                tcols = st.columns(4) + st.columns(4)[:3]
+                for col, (k, label) in zip(tcols, TOTAL_FIELDS):
+                    v = draft.get(k)
+                    if k == "total_transactions":
+                        fields[k] = col.number_input(label, min_value=0, step=1,
+                                                     value=None if v is None else int(round(v)))
+                    else:
+                        fields[k] = col.number_input(label, min_value=0.0, step=0.01, format="%.2f",
+                                                     value=None if v is None else float(v))
+                st.markdown("**Scheme lines** (fees in dollars - add or delete rows as needed)")
+                money = st.column_config.NumberColumn(format="dollar", min_value=0.0)
+                lines = st.data_editor(
+                    draft_lines(draft), num_rows="dynamic", width="stretch", hide_index=True,
+                    key=f"confirm_lines_{invoice_key}_{st.session_state.get(f'{draft_key}_v', 0)}",
+                    column_config={
+                        "Scheme": st.column_config.SelectboxColumn(
+                            options=["Visa", "Mastercard", "Eftpos", "Amex", "Other"], required=True),
+                        "Debit / credit": st.column_config.SelectboxColumn(options=["debit", "credit", "all"],
+                                                                           default="all", required=True),
+                        "Sales $": money, "Interchange $": money, "Scheme fees $": money, "Acquiring $": money,
+                        "Transactions": st.column_config.NumberColumn(format="localized", min_value=0, step=1),
+                    })
+                b1, b2 = st.columns(2)
+                recheck = b1.form_submit_button("Re-check", width="stretch")
+                confirm = b2.form_submit_button("Confirm figures", type="primary", width="stretch")
+            if recheck or confirm:
+                new = invoice_from_draft(invoice, fields, lines)
+                if confirm:
+                    st.session_state[confirmed_key] = new
+                    st.session_state.pop(draft_key, None)
+                else:
+                    st.session_state[draft_key] = new
+                    st.session_state[f"{draft_key}_v"] = st.session_state.get(f"{draft_key}_v", 0) + 1
+                st.rerun()
+        st.sidebar.markdown('<div class="ledger"><div class="head">Key metrics</div><div class="item"><div class="sub">'
+                            'Check and confirm the invoice figures to fill in the key metrics.</div></div></div>',
+                            unsafe_allow_html=True)
+        st.stop()
+    invoice = confirmed
+    with invoice_status:
+        e1, e2 = st.columns([3, 2], vertical_alignment="center")
+        e1.caption("Figures confirmed ✓ - the dashboard uses what you checked.")
+        if e2.container(key="inv_edit").button("Edit figures", key=f"edit_{invoice_key}", width="stretch"):
+            st.session_state[draft_key] = st.session_state.pop(confirmed_key)
+            st.session_state[f"{draft_key}_v"] = st.session_state.get(f"{draft_key}_v", 0) + 1
+            st.rerun()
+    invoice_overrides = invoice_rates(invoice)
+    invoice_key = f"{invoice_key}-{hashlib.sha1(json.dumps(invoice, sort_keys=True, default=str).encode()).hexdigest()[:8]}"
+    data_key = f"{invoice_key}|{uploaded.file_id if uploaded is not None else 'none'}"
 
 # ----- Headline figures: transactions when available, otherwise the invoice -----
 inv_months = invoice_months(invoice) if invoice else 1

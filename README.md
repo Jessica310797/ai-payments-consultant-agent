@@ -59,6 +59,16 @@ rates. Those rates pre-fill the Fee Assumptions table (rows marked `Invoice`), s
 and the ledger also shows the invoice's actual total. Requires `ANTHROPIC_API_KEY` in the app's secrets, like the
 other AI features. Each PDF is sent once and cached.
 
+### Checking the figures
+
+Before any analysis is shown, a **Check the Invoice Figures** card lists what Claude read: merchant, acquirer,
+period, pricing model, the statement totals and one line per scheme (sales, transactions, interchange, scheme fees
+and acquiring, in dollars). Simple checks flag likely misreads: lines that don't add up to the totals, fee parts that
+don't add up to total fees, an unusual effective rate, a missing period, no transaction counts, or Visa/Mastercard
+not split into debit and credit. Correct anything against the statement, press **Re-check**, then **Confirm
+figures**. The dashboard, ledger and reform figures use only the confirmed figures, and **Edit figures** in the
+header reopens them.
+
 ## Secrets
 
 In Streamlit **Settings → Secrets**:
