@@ -682,9 +682,15 @@ def analyse_debit_routing(df):
     """Approved debit transactions with their current network, a suggested post-reform network,
     and per-transaction interchange cost under each. Returns None if routing data is missing."""
     d = df[(df["status"] == "approved") & (df["card_type"] == "debit")].copy()
-    if "network" not in d.columns or d["network"].isna().all():
-        return None
+    inferred = "network" not in d.columns or d["network"].isna().all()
+    if inferred:
+        # No network column: in acquirer exports the scheme shown on a debit transaction is the network it ran on
+        # (a dual-network card routed via eftpos shows "EFTPOS", via Visa shows "VISA DEBIT").
+        d["network"] = d["payment_method"].where(d["payment_method"].isin(["Eftpos", "Visa", "Mastercard"]))
     d = d.dropna(subset=["network"])
+    if d.empty:
+        return None
+    d.attrs["network_inferred"] = inferred
     # Scheme to fall back to when eftpos isn't cheaper: the card's own scheme
     own_scheme = d["payment_method"].where(d["payment_method"].isin(["Visa", "Mastercard"]),
                                            d["network"].where(d["network"] != "Eftpos", "Visa"))
@@ -868,7 +874,9 @@ def parse_funding(text, letters=False):
         return "debit" if t.strip() == "d" else "credit"
     if "debit" in t or "prepaid" in t or "cheque" in t or "savings" in t or words & {"dr", "db", "deb", "dmc", "dvi", "vd", "sav", "chq"}:
         return "debit"
-    return "credit" if ("credit" in t or words & {"cr", "vc"}) else "unknown"
+    if "credit" in t or "charge card" in t or words & {"cr", "vc", "commercial", "corporate", "business"}:
+        return "credit"
+    return "unknown"
 
 # Fee / cost columns in a transactions file: (category, name pattern), checked in order.
 # Surcharge is income for the merchant, not a cost, so it's kept separate.
@@ -1174,6 +1182,11 @@ def load_transactions(name, data, overrides=()):
         cols = [c for c, cat in fee_cols.items() if cat == category]
         out[f"fee_{category}"] = (sum(parse_amounts(table[c], in_cents).fillna(0).abs() for c in cols)
                                   if cols else 0.0)
+    card_type_unread = []
+    if "card_type" in mapping:
+        raw_ct = table[mapping["card_type"]].astype(str).str.strip()
+        unread = raw_ct[(out["card_type"] == "unknown") & (raw_ct != "") & (raw_ct.str.lower() != "nan")]
+        card_type_unread = [(v, int(n)) for v, n in unread.value_counts().head(5).items()]
     rows_read = len(out)
     refunds = int((out["amount"] <= 0).sum())
     other_status = int(out["status"].isna().sum())
@@ -1185,7 +1198,8 @@ def load_transactions(name, data, overrides=()):
     report = {"rows_read": rows_read, "rows_used": len(df), "refunds_or_zero": refunds,
               "other_status": other_status, "mapping": mapping, "method": method, "notes": notes,
               "no_status": "status" not in mapping, "fee_columns": fee_cols,
-              "columns": [str(c) for c in table.columns], "auto_mapping": auto_mapping}
+              "columns": [str(c) for c in table.columns], "auto_mapping": auto_mapping,
+              "card_type_unread": card_type_unread}
     return df, report
 
 def actual_fees_from_file(df, n_months):
@@ -1223,7 +1237,7 @@ def normalise_card_columns(df):
         df["card_type"] = "unknown"
     # eftpos is always debit and Amex always credit, whatever the file said (or didn't)
     implied = df["payment_method"].map({"Eftpos": "debit", "Amex": "credit"})
-    df["card_type"] = df["card_type"].where(df["card_type"] != "unknown", implied.fillna("unknown"))
+    df["card_type"] = implied.fillna(df["card_type"])
     return df
 
 def run_agent(df, question, invoice=None, max_iterations=5):
@@ -1392,6 +1406,9 @@ if uploaded is not None:
                 tstatus.update(label=f"Transactions read ✓ {report['rows_used']:,} rows ({report['method']})",
                                state="complete", expanded=False)
                 st.caption(" · ".join(f"{labels[f]} ← {c}" for f, c in report["mapping"].items()))
+                if report.get("card_type_unread"):
+                    st.caption("Couldn't read as debit or credit: " + ", ".join(
+                        f"'{v}' ({n:,} rows)" for v, n in report["card_type_unread"]) + ". Tell us what these mean.")
                 if "card_type" not in report["mapping"]:
                     st.caption("No debit/credit column found, so debit/credit comes from the scheme text "
                                "(e.g. 'Visa Debit'). Use Adjust column matching to pick one.")
@@ -1610,6 +1627,10 @@ if df is not None or invoice:
                 st.markdown(routing_rows(routing_split(debit, "network"), n_months), unsafe_allow_html=True)
                 st.markdown(f'<div class="highlight"><span class="lbl">Debit routed<br>via eftpos today:</span>'
                             f'<span class="num">{lcr_now:.0f}%</span></div>', unsafe_allow_html=True)
+                if debit.attrs.get("network_inferred"):
+                    st.markdown('<div class="route-note">No network column in the file, so each debit '
+                                'transaction\'s network is taken from its card scheme (EFTPOS = routed via eftpos, '
+                                'VISA/MC DEBIT = routed via the scheme).</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="route-note">Interchange on debit today: '
                             f'{fmt_money(debit["cost_today"].sum() / n_months)}/mo · '
                             f'{fmt_money(debit["cost_post_current"].sum() / n_months)}/mo from 1 Oct on this routing. '
