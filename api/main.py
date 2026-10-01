@@ -78,6 +78,11 @@ def _media_type(f: UploadFile, data: bytes):
         return "image/webp"
     return f.content_type or "application/octet-stream"
 
+@app.get("/")
+def root():
+    """Opening the server's address in a browser shows it's running (the app itself uses the /v1 routes)."""
+    return {"ok": True, "service": "Payments Consultant API", "health": "/health"}
+
 @app.get("/health")
 def health():
     return {"ok": True}
