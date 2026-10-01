@@ -15,7 +15,14 @@ card scheme, status, decline reason, debit/credit and network columns by name an
 match the essentials it asks Claude, sending only the column names, the first 15 rows (card numbers masked) and the
 distinct values of short code-like columns, never the whole file. Values are standardised: "VISA DEBIT" → Visa +
 debit, "$1,234.50" → 1234.50, Australian day-first dates, codes such as VI/MC/EP decoded. Refunds, voids and pending
-rows are left out. The status line under the uploader shows which column was used for what.
+rows are left out. Scheme codes such as MC, M/C, DMC, VI, EP and AX are recognised as words within the text.
+
+**Fees in the file:** columns such as Interchange Fee, Scheme Fee, MSF / Merchant Fee, Processing, Terminal
+Rental and Total Fees are found and added up, and the ledger's Total cost then uses these actual fees (labelled
+"Transactions file") instead of estimates. A total-fees column is only used when there are no component columns,
+so nothing is double counted; rate %, net amount and GST columns are ignored. A Surcharge column is treated as
+income and used in the Surcharge Impact card. The status line under the uploader shows which column was used for
+what.
 
 The downloadable template shows the app's own column names
 (`date, amount, payment_method, status, decline_reason, card_type, network`).

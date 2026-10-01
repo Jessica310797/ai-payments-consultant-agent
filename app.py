@@ -836,22 +836,62 @@ class TransactionFileError(Exception):
 def _norm(name):
     return re.sub(r"[^a-z0-9]", "", str(name).lower())
 
+_SCHEME_RULES = [  # (substrings, whole-word codes, scheme) - checked in order
+    (("apple",), (), "Apple Pay"), (("google", "gpay"), (), "Google Pay"), (("samsung",), (), "Samsung Pay"),
+    (("amex", "american"), ("ax", "amx", "ae"), "Amex"),
+    (("master", "maestro"), ("mc", "mcd", "dmc", "mcc", "mcard", "mstr", "m/c"), "Mastercard"),
+    (("visa",), ("vi", "vs", "vsa", "dvi", "vd", "vc"), "Visa"),
+    (("eftpos", "cheque", "savings"), ("ep", "efp", "eft", "chq", "sav", "cheq"), "Eftpos"),
+    (("diners",), ("din",), "Diners"), (("jcb",), (), "JCB"), (("union",), ("cup",), "UnionPay"),
+]
+
+def _tokens(text):
+    t = str(text).lower().replace("m/c", " mc ")
+    return t, set(re.findall(r"[a-z]+", t))
+
 def parse_scheme(text):
-    """Card scheme from free text such as 'VISA DEBIT', 'MasterCard', 'EFTPOS SAV', 'Apple Pay'."""
-    t = str(text).lower()
-    for keys, name in [(("apple",), "Apple Pay"), (("google", "gpay"), "Google Pay"), (("samsung",), "Samsung Pay"),
-                       (("amex", "american"), "Amex"), (("master", "maestro"), "Mastercard"), (("visa",), "Visa"),
-                       (("eftpos", "cheque", "chq", "savings", "sav"), "Eftpos"), (("diners",), "Diners"),
-                       (("jcb",), "JCB"), (("union",), "UnionPay")]:
-        if any(k in t for k in keys):
+    """Card scheme from free text or codes: 'VISA DEBIT', 'MC', 'MC Debit', 'M/C', 'DMC', 'EFTPOS SAV', 'Apple Pay'."""
+    t, words = _tokens(text)
+    for subs, codes, name in _SCHEME_RULES:
+        if any(k in t for k in subs) or words & set(codes):
             return name
-    return "Mastercard" if t.strip() == "mc" else "Other"
+    return "Other"
 
 def parse_funding(text):
-    t = str(text).lower()
-    if "debit" in t or "prepaid" in t or "cheque" in t or "savings" in t:
+    t, words = _tokens(text)
+    if "debit" in t or "prepaid" in t or "cheque" in t or "savings" in t or words & {"dr", "db", "deb", "dmc", "dvi", "vd", "sav", "chq"}:
         return "debit"
-    return "credit" if "credit" in t else "unknown"
+    return "credit" if ("credit" in t or words & {"cr", "vc"}) else "unknown"
+
+# Fee / cost columns in a transactions file: (category, name pattern), checked in order.
+# Surcharge is income for the merchant, not a cost, so it's kept separate.
+_FEE_RULES = [
+    ("surcharge", r"surcharg"),
+    ("total", r"total.*(fee|cost|charge)|(fee|cost|charge)s?\W*total"),
+    ("interchange", r"interchange|\bic\b"),
+    ("scheme", r"scheme\W*fee|network\W*fee|assessment|brand\W*fee"),
+    ("other", r"terminal|rental|chargeback|statement\W*fee|monthly\W*fee|minimum|account\W*fee"),
+    ("acquiring", r"msf|merchant\W*(service|fee)|processing|acquir|transaction\W*fee|txn\W*fee|commission|"
+                  r"\bfees?\b|\bcosts?\b"),
+]
+_FEE_EXCLUDE = re.compile(r"\brate\b|%|percent|pct|\bnet\b|gross|\bgst\b|\btax\b|\bcode\b|\btype\b", re.I)
+FEE_CATEGORIES = ["interchange", "scheme", "acquiring", "other", "total", "surcharge"]
+
+def find_fee_columns(table, used):
+    """Columns holding money amounts whose names say they're fees/costs (or surcharges)."""
+    found = {}
+    for col in table.columns:
+        name = re.sub(r"[_\-]+", " ", str(col).lower())
+        if col in used or _FEE_EXCLUDE.search(name):
+            continue
+        for category, pattern in _FEE_RULES:
+            if re.search(pattern, name):
+                vals = table[col].dropna().astype(str).str.strip()
+                vals = vals[vals != ""]
+                if len(vals) and vals.head(200).map(lambda v: bool(_MONEY.fullmatch(v))).mean() >= 0.8:
+                    found[col] = category
+                break
+    return found
 
 def parse_amounts(series, in_cents=False):
     s = series.astype(str).str.strip()
@@ -986,6 +1026,10 @@ _MAPPING_SCHEMA = {
         "card_type_codes": {"type": "array", "items": {"type": "object", "properties": {
             "raw": {"type": "string"}, "card_type": {"type": "string", "enum": ["debit", "credit", "unknown"]}},
             "required": ["raw", "card_type"], "additionalProperties": False}},
+        "fee_columns": {"type": "array", "items": {"type": "object", "properties": {
+            "column": {"type": "string"},
+            "type": {"type": "string", "enum": FEE_CATEGORIES}},
+            "required": ["column", "type"], "additionalProperties": False}},
         "date_format": {"anyOf": [{"type": "string"}, {"type": "null"}]},
         "amount_in_cents": {"type": "boolean"},
         "day_first": {"type": "boolean"},
@@ -994,7 +1038,7 @@ _MAPPING_SCHEMA = {
     },
     "required": ["date_column", "amount_column", "scheme_column", "status_column", "decline_reason_column",
                  "card_type_column", "network_column", "approved_values", "declined_values", "scheme_codes",
-                 "card_type_codes", "date_format", "amount_in_cents",
+                 "card_type_codes", "fee_columns", "date_format", "amount_in_cents",
                  "day_first", "is_transaction_data", "notes"],
     "additionalProperties": False,
 }
@@ -1011,7 +1055,10 @@ def map_columns_with_claude(columns, sample_csv, distinct_values):
         "the decline reason, the funding type (debit / credit), and the network the payment was processed on. "
         "List the exact status values that mean approved and those that mean declined. Set amount_in_cents if "
         "amounts are whole cents, day_first if dates are written day before month (Australian format), and "
-        "is_transaction_data false if this isn't a list of card transactions. Give date_format as a Python strptime "
+        "is_transaction_data false if this isn't a list of card transactions. List every column that holds a fee or "
+        "cost charged to the merchant in fee_columns, typed interchange / scheme / acquiring (MSF, processing, "
+        "merchant fee) / other (terminal, chargeback...) / total (a total of the others) / surcharge (charged to "
+        "the customer). Give date_format as a Python strptime "
         "pattern for the date column if it's unusual (e.g. %d%m%Y), else null. If schemes or debit/credit are "
         "written as codes (e.g. VI, MC, EP, D, C), list what each distinct code means in scheme_codes and "
         "card_type_codes; otherwise leave those lists empty.")
@@ -1019,6 +1066,23 @@ def map_columns_with_claude(columns, sample_csv, distinct_values):
 
 def _mask_card_numbers(text):
     return re.sub(r"\b\d{12,19}\b", lambda m: m.group()[:4] + "…" + m.group()[-4:], text)
+
+def _doubtful(table, mapping):
+    """True when the automatic match found the columns but can't be trusted to read them correctly, so Claude
+    should check: status codes it can't classify (e.g. '05'), or whole-number amounts that may be in cents."""
+    if "status" in mapping:
+        vals = table[mapping["status"]].dropna().astype(str).str.strip()
+        vals = vals[vals != ""]
+        unknown = vals.map(lambda v: not (_APPROVED.search(v) or _DECLINED.search(v) or _SKIP_STATUS.search(v)
+                                          or re.search(r"\bnot\b", v.lower())))
+        if len(vals) and unknown.mean() > 0.05:
+            return True
+    amounts = table[mapping["amount"]].dropna().astype(str).str.strip().head(500)
+    if len(amounts) and not amounts.str.contains(r"[.$]").any():
+        numbers = parse_amounts(amounts).dropna()
+        if len(numbers) and numbers.median() >= 100:     # e.g. 11448 for $114.48
+            return True
+    return False
 
 @st.cache_data(show_spinner=False, max_entries=10)
 def load_transactions(name, data):
@@ -1031,8 +1095,8 @@ def load_transactions(name, data):
         raise TransactionFileError(f"Couldn't open the file ({type(e).__name__}). Supported: CSV, TSV, Excel (.xlsx), JSON.") from e
     mapping, method, notes = guess_mapping(table), "matched automatically", ""
     approved_vals, declined_vals, in_cents, day_first, date_fmt = [], [], False, True, None
-    scheme_codes, card_type_codes = {}, {}
-    if not {"date", "amount", "payment_method"} <= set(mapping):
+    scheme_codes, card_type_codes, ai_fees = {}, {}, None
+    if not {"date", "amount", "payment_method"} <= set(mapping) or _doubtful(table, mapping):
         sample = _mask_card_numbers(table.head(15).to_csv(index=False))
         distinct = "\n".join(
             f"{c}: " + ", ".join(map(str, table[c].dropna().astype(str).str.strip().unique()[:30]))
@@ -1051,6 +1115,7 @@ def load_transactions(name, data):
         date_fmt = ai.get("date_format")
         scheme_codes = {c["raw"].strip().lower(): c["scheme"] for c in ai.get("scheme_codes", [])}
         card_type_codes = {c["raw"].strip().lower(): c["card_type"] for c in ai.get("card_type_codes", [])}
+        ai_fees = {f["column"]: f["type"] for f in ai.get("fee_columns", []) if f["column"] in table.columns}
         method, notes = "mapped by Claude", ai.get("notes", "")
     missing = [f for f in ["date", "amount"] if f not in mapping]
     if missing:
@@ -1086,6 +1151,13 @@ def load_transactions(name, data):
     if "network" in mapping:
         out["network"] = table[mapping["network"]].map(parse_scheme).where(
             lambda n: n.isin(["Eftpos", "Visa", "Mastercard", "Amex"]))
+    fee_cols = find_fee_columns(table, set(mapping.values()))
+    if ai_fees:
+        fee_cols.update(ai_fees)
+    for category in FEE_CATEGORIES:
+        cols = [c for c, cat in fee_cols.items() if cat == category]
+        out[f"fee_{category}"] = (sum(parse_amounts(table[c], in_cents).fillna(0).abs() for c in cols)
+                                  if cols else 0.0)
     rows_read = len(out)
     refunds = int((out["amount"] <= 0).sum())
     other_status = int(out["status"].isna().sum())
@@ -1096,8 +1168,21 @@ def load_transactions(name, data):
     df = normalise_card_columns(out.assign(card_type=out["card_type"].fillna("unknown")).reset_index(drop=True))
     report = {"rows_read": rows_read, "rows_used": len(df), "refunds_or_zero": refunds,
               "other_status": other_status, "mapping": mapping, "method": method, "notes": notes,
-              "no_status": "status" not in mapping}
+              "no_status": "status" not in mapping, "fee_columns": fee_cols}
     return df, report
+
+def actual_fees_from_file(df, n_months):
+    """Monthly fees actually charged, from fee columns in the transactions file (None if there are none).
+    Component columns are used when present; a 'total' column only when there are no components."""
+    if df is None or not any(c.startswith("fee_") for c in df.columns):
+        return None
+    parts = {k: df[f"fee_{k}"].sum() / n_months for k in ["interchange", "scheme", "acquiring", "other"]}
+    total_col = df["fee_total"].sum() / n_months
+    components = sum(parts.values())
+    if components == 0 and total_col == 0:
+        return None
+    total = components if components > 0 else total_col
+    return {**parts, "total": total, "total_only": components == 0, "surcharge": df["fee_surcharge"].sum() / n_months}
 
 WALLETS = {"Apple Pay", "Google Pay", "Samsung Pay"}
 NETWORK_ALIASES = {"eftpos": "Eftpos", "visa": "Visa", "mastercard": "Mastercard", "mc": "Mastercard",
@@ -1287,6 +1372,8 @@ if uploaded is not None:
                 tstatus.update(label=f"Transactions read ✓ {report['rows_used']:,} rows ({report['method']})",
                                state="complete", expanded=False)
                 st.caption(" · ".join(f"{labels[f]} ← {c}" for f, c in report["mapping"].items()))
+                if report.get("fee_columns"):
+                    st.caption("Fees ← " + " · ".join(f"{c} ({cat})" for c, cat in report["fee_columns"].items()))
                 skipped = []
                 if report["refunds_or_zero"]:
                     skipped.append(f"{report['refunds_or_zero']:,} negative or zero amounts (refunds)")
@@ -1351,13 +1438,20 @@ def build_ledger_items(fees, overall_rate=None, at_risk=0):
             rate = f' · {invoice["total_fees"] / value * 100:.2f}%' if value else ""
             inv_line = (f'<div class="brk rate"><span>Invoice actual</span>'
                         f'<span>{fmt_money(invoice["total_fees"] / inv_months)}{rate}</span></div>')
+        actual = actual_fees_from_file(df, n_months)
+        if actual:   # the file's own fee columns beat estimates from rates
+            fees = actual
         cost = ("Total cost", fmt_money(fees["total"]) if fees else "—", "/ mo",
-                (f'<div class="brk"><span>Interchange</span><span>{fmt_money(fees["interchange"])}</span></div>'
-                 f'<div class="brk"><span>Scheme fees</span><span>{fmt_money(fees["scheme"])}</span></div>'
-                 f'<div class="brk"><span>Acquiring / processing</span><span>{fmt_money(fees["acquiring"])}</span></div>'
-                 f'<div class="brk rate"><span>Effective rate</span><span>'
+                (("" if fees.get("total_only") else
+                  f'<div class="brk"><span>Interchange</span><span>{fmt_money(fees["interchange"])}</span></div>'
+                  f'<div class="brk"><span>Scheme fees</span><span>{fmt_money(fees["scheme"])}</span></div>'
+                  f'<div class="brk"><span>Acquiring / processing</span><span>{fmt_money(fees["acquiring"])}</span></div>'
+                  + (f'<div class="brk"><span>Other</span><span>{fmt_money(fees["other"])}</span></div>'
+                     if fees.get("other") else ""))
+                 + f'<div class="brk rate"><span>Effective rate</span><span>'
                  f'{(fees["total"] / monthly_revenue * 100 if monthly_revenue else 0):.2f}% of revenue</span></div>'
-                 + inv_line)
+                 + f'<div class="brk"><span>Source</span><span>{"Transactions file" if actual else "Estimated from rates"}'
+                 f'</span></div>' + inv_line)
                 if fees else ("Calculating…" if df is not None else "Upload an invoice to see fees") + inv_line)
     volume_sub = (f"Approval rate {overall_rate:.1f}%" if overall_rate is not None
                   else ("From the invoice" if invoice else "Upload an invoice to populate"))
@@ -1529,10 +1623,20 @@ if df is not None or invoice:
     with st.container(key="card_surcharge"):
         card_title("Surcharge Impact · 1 Oct")
         i1, i2, i3 = st.columns([2, 3, 3], gap="large", vertical_alignment="center")
+        file_surcharge = None
+        if df is not None and "fee_surcharge" in df and df["fee_surcharge"].sum() > 0:
+            banned = (df["network"].isin(SURCHARGE_BAN_NETWORKS) if df["network"].notna().any()
+                      else df["payment_method"] != "Amex")
+            file_surcharge = df.loc[banned, "fee_surcharge"].sum() / n_months
         with i1:
             is_surcharging = st.checkbox("Merchant surcharges today", value=True, key="surcharging")
-            surcharge_rate = st.number_input("Current surcharge %", min_value=0.0, max_value=5.0, value=1.0,
-                                             step=0.1, disabled=not is_surcharging, key="surcharge_rate")
+            if file_surcharge is not None:
+                surcharge_rate = 0.0
+                st.caption(f"Using the surcharges in the transactions file: {fmt_money(file_surcharge)}/mo "
+                           "collected on eftpos, Visa and Mastercard.")
+            else:
+                surcharge_rate = st.number_input("Current surcharge %", min_value=0.0, max_value=5.0, value=1.0,
+                                                 step=0.1, disabled=not is_surcharging, key="surcharge_rate")
         if df is not None:
             base = surcharge_base_from_df(df, n_months)
             saving = ((debit["cost_post_current"].sum() - debit["cost_post_suggested"].sum()) / n_months
@@ -1545,6 +1649,10 @@ if df is not None or invoice:
             base = (covered if covered else max((value or 0) - amex, 0)) / n_months
             saving = inv_routing["saving"] if inv_routing else 0.0
         imp = surcharge_impact(base, monthly_revenue, saving, is_surcharging, surcharge_rate)
+        if file_surcharge is not None:
+            lost = file_surcharge if is_surcharging else 0.0
+            imp = {**imp, "lost": lost, "net": saving - lost,
+                   "price_rise_pct": ((lost - saving) / monthly_revenue * 100) if (lost > saving and monthly_revenue) else 0.0}
         with i2:
             st.markdown(
                 f'<div class="impact">'
@@ -1788,6 +1896,9 @@ fees = None
 if df is not None:
     with st.container(key="card_fees"):
         card_title("Fee Assumptions")
+        if actual_fees_from_file(df, n_months):
+            st.caption("The ledger's Total cost uses the actual fees in your transactions file. This table is only "
+                       "used for estimates where the file has no fee columns.")
         st.caption("Rates used to estimate monthly fees on approved transactions. "
                    + ("Rows marked 'Invoice' come from the uploaded invoice; the rest are illustrative. "
                       if invoice_overrides else
