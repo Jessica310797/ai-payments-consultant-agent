@@ -821,7 +821,10 @@ _FIELD_ALIASES = {
     "status": ["status", "result", "outcome", "transactionstatus", "approvalstatus", "response", "responsetext", "state"],
     "decline_reason": ["declinereason", "reason", "responsetext", "responsemessage", "errormessage", "failurereason",
                        "failuremessage", "declinecode", "responsecode", "message"],
-    "card_type": ["fundingtype", "funding", "accounttype", "cardcategory", "debitcredit", "cardfunding", "cardtype"],
+    "card_type": ["fundingtype", "funding", "fundingsource", "cardfundingtype", "cardfunding", "accounttype",
+                  "cardcategory", "debitcredit", "creditdebit", "debitorcredit", "creditordebit", "drcr", "crdr",
+                  "dc", "cd", "debitcreditindicator", "cardproduct", "producttype", "product", "cardclass",
+                  "cardtype", "type"],
     "network": ["network", "routednetwork", "processingnetwork", "routedvia", "routing", "acquirernetwork"],
 }
 _APPROVED = re.compile(r"approv|succe(ss|ed)|settled|captur|authori[sz]ed|complete|paid|accept|^ok$|^00$|^y(es)?$", re.I)
@@ -857,8 +860,12 @@ def parse_scheme(text):
             return name
     return "Other"
 
-def parse_funding(text):
+def parse_funding(text, letters=False):
+    """Debit / credit from text or codes. With letters=True (a column known to hold debit/credit) a bare 'D' or
+    'C' counts too."""
     t, words = _tokens(text)
+    if letters and t.strip() in ("d", "c"):
+        return "debit" if t.strip() == "d" else "credit"
     if "debit" in t or "prepaid" in t or "cheque" in t or "savings" in t or words & {"dr", "db", "deb", "dmc", "dvi", "vd", "sav", "chq"}:
         return "debit"
     return "credit" if ("credit" in t or words & {"cr", "vc"}) else "unknown"
@@ -980,7 +987,8 @@ def guess_mapping(table):
         "payment_method": lambda col: _share(table[col], lambda v: parse_scheme(v) != "Other") >= 0.6,
         "status": lambda col: _share(table[col], lambda v: bool(_APPROVED.search(v) or _DECLINED.search(v)
                                                                 or _SKIP_STATUS.search(v))) >= 0.6,
-        "card_type": lambda col: _share(table[col], lambda v: parse_funding(v) != "unknown") >= 0.6,
+        "card_type": lambda col: (_share(table[col], lambda v: parse_funding(v, letters=True) != "unknown") >= 0.6
+                                  and table[col].nunique() <= 12),
         "network": lambda col: _share(table[col], lambda v: parse_scheme(v) in ("Eftpos", "Visa", "Mastercard",
                                                                                "Amex")) >= 0.6,
         "decline_reason": lambda col: True,
@@ -1085,8 +1093,9 @@ def _doubtful(table, mapping):
     return False
 
 @st.cache_data(show_spinner=False, max_entries=10)
-def load_transactions(name, data):
-    """Returns (df, report). Raises TransactionFileError with a plain-English message if it can't be read."""
+def load_transactions(name, data, overrides=()):
+    """Returns (df, report). Raises TransactionFileError with a plain-English message if it can't be read.
+    `overrides` is ((field, column or ""), ...) chosen by the user in "Adjust column matching"."""
     try:
         table = read_table(name, data)
     except TransactionFileError:
@@ -1117,6 +1126,13 @@ def load_transactions(name, data):
         card_type_codes = {c["raw"].strip().lower(): c["card_type"] for c in ai.get("card_type_codes", [])}
         ai_fees = {f["column"]: f["type"] for f in ai.get("fee_columns", []) if f["column"] in table.columns}
         method, notes = "mapped by Claude", ai.get("notes", "")
+    auto_mapping = dict(mapping)
+    for field, col in overrides:
+        if col == "":
+            mapping.pop(field, None)
+        elif col in table.columns:
+            mapping = {f: c for f, c in mapping.items() if c != col}   # a column can only mean one thing
+            mapping[field] = col
     missing = [f for f in ["date", "amount"] if f not in mapping]
     if missing:
         raise TransactionFileError(f"Couldn't find a {' or '.join(missing)} column. Columns found: "
@@ -1145,7 +1161,7 @@ def load_transactions(name, data):
                              if "decline_reason" in mapping else None)
     if "card_type" in mapping:
         out["card_type"] = table[mapping["card_type"]].map(
-            lambda v: card_type_codes.get(str(v).strip().lower()) or parse_funding(v))
+            lambda v: card_type_codes.get(str(v).strip().lower()) or parse_funding(v, letters=True))
     else:
         out["card_type"] = scheme_src.map(parse_funding)
     if "network" in mapping:
@@ -1168,7 +1184,8 @@ def load_transactions(name, data):
     df = normalise_card_columns(out.assign(card_type=out["card_type"].fillna("unknown")).reset_index(drop=True))
     report = {"rows_read": rows_read, "rows_used": len(df), "refunds_or_zero": refunds,
               "other_status": other_status, "mapping": mapping, "method": method, "notes": notes,
-              "no_status": "status" not in mapping, "fee_columns": fee_cols}
+              "no_status": "status" not in mapping, "fee_columns": fee_cols,
+              "columns": [str(c) for c in table.columns], "auto_mapping": auto_mapping}
     return df, report
 
 def actual_fees_from_file(df, n_months):
@@ -1364,14 +1381,20 @@ invoice_overrides = invoice_rates(invoice) if invoice else {}
 df = None
 if uploaded is not None:
     with txn_status:
+        override_key = f"colmap_{uploaded.file_id}"
+        overrides = st.session_state.get(override_key, {})
+        labels = {"date": "Date", "amount": "Amount", "payment_method": "Card scheme", "card_type": "Debit / credit",
+                  "status": "Status", "decline_reason": "Decline reason", "network": "Network"}
+        report = None
         with st.status("Reading transactions…") as tstatus:
             try:
-                df, report = load_transactions(uploaded.name, uploaded.getvalue())
-                labels = {"date": "Date", "amount": "Amount", "payment_method": "Card scheme", "status": "Status",
-                          "decline_reason": "Decline reason", "card_type": "Debit / credit", "network": "Network"}
+                df, report = load_transactions(uploaded.name, uploaded.getvalue(), tuple(sorted(overrides.items())))
                 tstatus.update(label=f"Transactions read ✓ {report['rows_used']:,} rows ({report['method']})",
                                state="complete", expanded=False)
                 st.caption(" · ".join(f"{labels[f]} ← {c}" for f, c in report["mapping"].items()))
+                if "card_type" not in report["mapping"]:
+                    st.caption("No debit/credit column found, so debit/credit comes from the scheme text "
+                               "(e.g. 'Visa Debit'). Use Adjust column matching to pick one.")
                 if report.get("fee_columns"):
                     st.caption("Fees ← " + " · ".join(f"{c} ({cat})" for c, cat in report["fee_columns"].items()))
                 skipped = []
@@ -1391,6 +1414,24 @@ if uploaded is not None:
             except Exception as e:
                 tstatus.update(label="Couldn't read the transactions file", state="error", expanded=True)
                 st.error(f"{type(e).__name__}: {redact(str(e))[:200]}")
+        if report is not None:
+            with st.popover("Adjust column matching", width="stretch"):
+                st.caption("Pick the column for each item if the automatic match is wrong.")
+                options = ["(none)"] + report["columns"]
+                changed = dict(overrides)
+                for field, label in labels.items():
+                    current = report["mapping"].get(field)
+                    choice = st.selectbox(label, options, index=options.index(current) if current in options else 0,
+                                          key=f"{override_key}_{field}")
+                    if choice != (current or "(none)"):
+                        changed[field] = "" if choice == "(none)" else choice
+                if overrides and st.button("Reset to automatic", key=f"{override_key}_reset"):
+                    changed = {}
+                    for field in labels:
+                        st.session_state.pop(f"{override_key}_{field}", None)
+                if changed != overrides:
+                    st.session_state[override_key] = changed
+                    st.rerun()
 data_key = f"{invoice_key}|{uploaded.file_id if uploaded is not None else 'none'}"
 
 # ----- Headline figures: transactions when available, otherwise the invoice -----
