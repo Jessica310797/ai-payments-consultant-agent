@@ -45,23 +45,25 @@ Use the same Railway account as Pakka - this is a separate service and doesn't t
 
 Railway redeploys automatically when `api/` or `payments_core.py` change on `main` (not for website-only changes).
 
-### 2. Expo account and app settings
+### 2. Build for iPhone and send to TestFlight (in a GitHub Codespace, like Pakka)
 
-1. Use your existing [expo.dev](https://expo.dev) account (the one Pakka is in) - this becomes a second project.
-2. The app ID is `com.jessicaculnane.paymentsconsultant` (`ios.bundleIdentifier` and `android.package` in
-   `app.json`, matching Pakka's `com.jessicaculnane.pakka`). It can't be changed once the app is published.
-3. On a computer with Node.js: `cd mobile && npm install && npx eas-cli@latest login && npx eas-cli@latest init`.
-4. Add the server details as EAS environment variables for **preview** and **production**:
-   `EXPO_PUBLIC_API_URL` (the Railway address) and `EXPO_PUBLIC_APP_ACCESS_KEY` (the APP_ACCESS_KEY value), on
-   expo.dev → your project → Environment variables.
+The server address is already in the app (`eas.json` and `app.json`). The access key isn't in the code - add it on
+expo.dev in step 4.
 
-### 3. Try it on your own phone
+1. On the repository's GitHub page: **Code → Codespaces → Create codespace on main**, then in its terminal:
+   `cd mobile && npm ci`
+2. `npx eas-cli@latest login` - the same Expo account as Pakka.
+3. `npx eas-cli@latest init` - creates the Expo project and adds its ID to `app.json`. Commit and push that change
+   (Source Control panel → Commit → Sync).
+4. On expo.dev → this project → **Environment variables** → add `EXPO_PUBLIC_APP_ACCESS_KEY` with the same value as
+   `APP_ACCESS_KEY` in Railway, for the **production** and **preview** environments (visibility Plain text or
+   Sensitive - not Secret, because the app needs to read it).
+5. `npx eas-cli@latest build --platform ios --profile production --auto-submit` - log in with your Apple Developer
+   account when asked and let EAS create the certificates and the App Store Connect app. When the build finishes it's
+   uploaded to **TestFlight**; install it from the TestFlight app on your iPhone (Apple's processing takes 10-30 min).
 
-- **Android:** `npx eas-cli@latest build --profile preview --platform android` → open the link on your phone to
-  install the APK.
-- **iPhone:** needs an Apple Developer account (A$149/year). Build with
-  `npx eas-cli@latest build --profile production --platform ios`, then
-  `npx eas-cli@latest submit --platform ios` to send it to **TestFlight**, and install it from the TestFlight app.
+Android, when you want it: `npx eas-cli@latest build --profile preview --platform android` gives an APK link to
+install directly.
 
 ### 4. Publish
 
