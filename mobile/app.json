@@ -1,0 +1,52 @@
+{
+  "expo": {
+    "name": "Payments Consultant",
+    "slug": "payments-consultant",
+    "version": "1.0.0",
+    "scheme": "paymentsconsultant",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#FBF4E6",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "au.com.paymentsconsultant.app",
+      "config": {
+        "usesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "au.com.paymentsconsultant.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#1D4B45",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "output": "single"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Choose photos of a merchant's card statement so its fees can be read.",
+          "cameraPermission": "Photograph a merchant's card statement so its fees can be read.",
+          "microphonePermission": false
+        }
+      ],
+      "expo-document-picker"
+    ],
+    "experiments": {
+      "typedRoutes": false
+    },
+    "extra": {
+      "apiUrl": "",
+      "accessKey": ""
+    }
+  }
+}
