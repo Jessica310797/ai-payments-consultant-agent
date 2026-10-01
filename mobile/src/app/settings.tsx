@@ -29,7 +29,7 @@ export default function Settings() {
             setApiUrl(v);
             setSaved(false);
           }}
-          placeholder={extra.apiUrl || 'https://your-server.onrender.com'}
+          placeholder={extra.apiUrl || 'https://your-server.up.railway.app'}
         />
         <TextField
           label="Access key"

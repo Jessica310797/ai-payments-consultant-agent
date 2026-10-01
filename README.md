@@ -84,8 +84,8 @@ ANTHROPIC_API_KEY = "sk-ant-..."
 [`mobile/`](mobile) is an Expo app for in-store visits: photograph the merchant's statement, check the figures,
 then show the results on the phone. It talks to a small API in [`api/`](api), which holds the Anthropic key and
 uses the same calculations as this website. Both live in [`payments_core.py`](payments_core.py), so the website and
-the app always agree. See [`mobile/README.md`](mobile/README.md) for putting the API online (Render,
-[`render.yaml`](render.yaml)) and building for the App Store and Google Play.
+the app always agree. See [`mobile/README.md`](mobile/README.md) for putting the API online (Railway,
+[`railway.json`](railway.json) and [`api/Dockerfile`](api/Dockerfile)) and building for the App Store and Google Play.
 
 API endpoints: `POST /v1/invoice/read` (PDF or page photos → editable figures + checks), `POST /v1/invoice/check`
 (edited figures → checks), `POST /v1/report` (confirmed figures → results, all per month).

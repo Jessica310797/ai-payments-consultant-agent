@@ -1,0 +1,5 @@
+mobile/
+.git/
+**/__pycache__/
+assets/
+*.md

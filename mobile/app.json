@@ -10,13 +10,13 @@
     "backgroundColor": "#FBF4E6",
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "au.com.paymentsconsultant.app",
+      "bundleIdentifier": "com.jessicaculnane.paymentsconsultant",
       "config": {
         "usesNonExemptEncryption": false
       }
     },
     "android": {
-      "package": "au.com.paymentsconsultant.app",
+      "package": "com.jessicaculnane.paymentsconsultant",
       "adaptiveIcon": {
         "backgroundColor": "#1D4B45",
         "foregroundImage": "./assets/android-icon-foreground.png",
