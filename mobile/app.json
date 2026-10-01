@@ -45,7 +45,7 @@
       "typedRoutes": false
     },
     "extra": {
-      "apiUrl": "",
+      "apiUrl": "https://ai-payments-consultant-agent-production.up.railway.app",
       "accessKey": ""
     }
   }

@@ -9,11 +9,17 @@
       "environment": "preview",
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://ai-payments-consultant-agent-production.up.railway.app"
       }
     },
     "production": {
       "environment": "production",
-      "autoIncrement": true
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://ai-payments-consultant-agent-production.up.railway.app"
+      }
     }
   },
   "submit": {
