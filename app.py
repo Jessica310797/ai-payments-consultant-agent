@@ -200,6 +200,14 @@ div[data-testid="stForm"] {{ border: none; padding: 0; }}
 .impact .line .neg {{ color: #A4502F; font-weight: 700; }}
 .impact .line .pos {{ color: #1D6B3A; font-weight: 700; }}
 
+table.reform {{ width: 100%; border-collapse: collapse; font-size: 13px; color: {INK}; margin: 10px 0 6px; }}
+table.reform th {{ text-align: right; font-weight: 600; color: {MUTED}; font-size: 12px; padding: 4px 6px; }}
+table.reform td {{ text-align: right; padding: 4px 6px; border-top: 1px solid #EFE6D6; }}
+table.reform td:first-child, table.reform th:first-child {{ text-align: left; }}
+table.reform td.same {{ color: {MUTED}; }}
+table.reform tr.tot td {{ font-weight: 700; border-top: 1.5px solid {INK}; }}
+table.reform tr.rate td {{ font-weight: 700; color: {ORANGE}; border-top: none; }}
+
 .empty-state {{ text-align: center; color: {MUTED}; font-size: 14px; padding: 28px 12px; }}
 .empty-state .big {{ font-size: 17px; font-weight: 600; color: {INK}; margin-bottom: 6px; }}
 
@@ -667,50 +675,7 @@ TOOL_FUNCTIONS = {"calculate_revenue_impact": calculate_revenue_impact,
 
 # ---------- SHARED: routing mix analysis (from transaction data) ----------
 
-SCHEME_DEBIT_RATE = {"Visa": VISA_DEBIT_ADVALOREM, "Mastercard": MASTERCARD_DEBIT_ADVALOREM}
-LCR_THRESHOLD = EFTPOS_FLAT_FEE / VISA_DEBIT_ADVALOREM   # above this value eftpos is the cheaper debit network
 SURCHARGE_BAN_NETWORKS = ["Eftpos", "Visa", "Mastercard"]
-
-def _debit_cost(network, amount, post_reform):
-    rate = network.map(SCHEME_DEBIT_RATE).fillna(VISA_DEBIT_ADVALOREM).to_numpy()
-    scheme = amount * rate
-    if post_reform:
-        scheme = np.minimum(scheme, POST_REFORM_DEBIT_CAP)
-    return np.where(network.to_numpy() == "Eftpos", EFTPOS_FLAT_FEE, scheme)
-
-def analyse_debit_routing(df):
-    """Approved debit transactions with their current network, a suggested post-reform network,
-    and per-transaction interchange cost under each. Returns None if routing data is missing."""
-    d = df[(df["status"] == "approved") & (df["card_type"] == "debit")].copy()
-    inferred = "network" not in d.columns or d["network"].isna().all()
-    if inferred:
-        # No network column: in acquirer exports the scheme shown on a debit transaction is the network it ran on
-        # (a dual-network card routed via eftpos shows "EFTPOS", via Visa shows "VISA DEBIT").
-        d["network"] = d["payment_method"].where(d["payment_method"].isin(["Eftpos", "Visa", "Mastercard"]))
-    d = d.dropna(subset=["network"])
-    if d.empty:
-        return None
-    d.attrs["network_inferred"] = inferred
-    # Scheme to fall back to when eftpos isn't cheaper: the card's own scheme
-    own_scheme = d["payment_method"].where(d["payment_method"].isin(["Visa", "Mastercard"]),
-                                           d["network"].where(d["network"] != "Eftpos", "Visa"))
-    eftpos_better = (d["amount"] >= LCR_THRESHOLD) | (d["payment_method"] == "Eftpos")
-    d["suggested"] = np.where(eftpos_better, "Eftpos", own_scheme)
-    d["cost_today"] = _debit_cost(d["network"], d["amount"].to_numpy(), post_reform=False)
-    d["cost_post_current"] = _debit_cost(d["network"], d["amount"].to_numpy(), post_reform=True)
-    d["cost_post_suggested"] = _debit_cost(d["suggested"], d["amount"].to_numpy(), post_reform=True)
-    return d
-
-def routing_split(d, column):
-    """Share (%) of transactions per network for each card brand."""
-    order = [m for m in ["Visa", "Mastercard", "Eftpos"] if m in d["payment_method"].unique()]
-    order += sorted(set(d["payment_method"].unique()) - set(order))
-    out = []
-    for m in order:
-        sub = d[d["payment_method"] == m]
-        shares = (sub[column].value_counts(normalize=True) * 100).to_dict()
-        out.append((m, len(sub), shares))
-    return out
 
 def surcharge_base_from_df(df, n_months):
     """Monthly approved value on the networks covered by the 1 Oct surcharge ban."""
@@ -727,6 +692,150 @@ def surcharge_impact(base, revenue, saving, surcharging, rate_pct):
     net = saving - lost
     return {"base": base, "lost": lost, "saving": saving, "net": net,
             "price_rise_pct": (-net / revenue * 100) if (net < 0 and revenue) else 0.0}
+
+# ---------- 1 OCT REFORM IMPACT ON THE MERCHANT'S ACTUAL FEES ----------
+# Cost per transaction (or per invoice line) is split into interchange, scheme fees and processing. The reform caps
+# interchange only; scheme fees and processing stay the same. Least-cost routing then sends dual-network debit via
+# eftpos where eftpos's interchange + scheme fee is cheaper than the card scheme's post-reform cost.
+REFORM_DEBIT_CAP = 0.08                # $ per debit / prepaid transaction on eftpos, Visa and Mastercard
+REFORM_CONSUMER_CREDIT_CAP = 0.003     # 0.3% of value, consumer credit (commercial 0.8% can't be told apart)
+REFORM_NETWORKS = {"Eftpos", "Visa", "Mastercard"}   # Amex isn't covered by the caps
+
+def _rate_columns(rates, methods):
+    """Per-row rates (FEE_COLUMNS) for a sequence of payment methods, falling back to the 'Other' row."""
+    table = rates.set_index("Payment method")[FEE_COLUMNS].apply(pd.to_numeric, errors="coerce").fillna(0)
+    fallback = table.loc["Other"] if "Other" in table.index else pd.Series(0.0, index=FEE_COLUMNS)
+    return table.reindex(list(methods)).apply(lambda col: col.fillna(fallback[col.name]))
+
+def _estimated_fees(rates, methods, amount, count):
+    r = _rate_columns(rates, methods)
+    ic = amount * r["Interchange %"].to_numpy() / 100 + count * r["Interchange ¢"].to_numpy() / 100
+    sc = amount * r["Scheme fee %"].to_numpy() / 100
+    pr = amount * r["Acquiring %"].to_numpy() / 100 + count * r["Processing ¢"].to_numpy() / 100
+    return ic, sc, pr
+
+def costs_from_transactions(df, rates):
+    """One row per approved transaction: scheme, debit/credit, the network it ran on, value, and its fees split
+    into interchange / scheme / processing - actual from the file's fee columns where it has them."""
+    a = df[df["status"] == "approved"].copy()
+    has_network = "network" in a.columns and a["network"].notna().any()
+    f = pd.DataFrame({"payment_method": a["payment_method"].to_numpy(), "card_type": a["card_type"].to_numpy(),
+                      "amount": a["amount"].to_numpy(dtype=float), "count": 1.0})
+    # No network column: the scheme shown on a debit transaction is the network it ran on
+    f["net_now"] = (a["network"].fillna(a["payment_method"]) if has_network else a["payment_method"]).to_numpy()
+    est_ic, est_sc, est_pr = _estimated_fees(rates, f["payment_method"], f["amount"].to_numpy(), f["count"].to_numpy())
+    def col(name):
+        return a[name].to_numpy(dtype=float) if name in a.columns else np.zeros(len(a))
+    file_ic, file_sc = col("fee_interchange"), col("fee_scheme")
+    file_pr, file_total = col("fee_acquiring") + col("fee_other"), col("fee_total")
+    if (file_ic + file_sc + file_pr).sum() > 0:
+        f["ic"] = file_ic if file_ic.sum() > 0 else est_ic
+        f["sc"] = file_sc if file_sc.sum() > 0 else est_sc
+        f["pr"] = file_pr
+        source = "transactions file" + ("" if file_ic.sum() > 0 else " (interchange estimated from rates)")
+    elif file_total.sum() > 0:
+        f["ic"], f["sc"] = est_ic, est_sc
+        f["pr"] = np.maximum(file_total - est_ic - est_sc, 0)
+        source = "transactions file total, split using the rate table"
+    else:
+        f["ic"], f["sc"], f["pr"] = est_ic, est_sc, est_pr
+        source = "rate table (estimates)"
+    f.attrs.update(source=source, network_inferred=not has_network)
+    return f
+
+def costs_from_invoice(invoice, rates):
+    """One row per invoice scheme line, with the same columns as costs_from_transactions."""
+    value_total, txn_total = invoice_totals(invoice)
+    avg_ticket = (value_total / txn_total) if (value_total and txn_total) else None
+    rows = []
+    for l in invoice.get("schemes", []):
+        value = l.get("value")
+        if not value:
+            continue
+        count = l.get("transactions") or (value / avg_ticket if avg_ticket else 0)
+        ct = l["card_type"] if l["card_type"] != "all" else {"Eftpos": "debit", "Amex": "credit"}.get(l["scheme"], "all")
+        def part(amount_key, pct_key, cents_key=None):
+            if l.get(amount_key) is not None:
+                return l[amount_key]
+            if l.get(pct_key) is not None or (cents_key and l.get(cents_key) is not None):
+                return (l.get(pct_key) or 0) * value / 100 + ((l.get(cents_key) or 0) * count / 100 if cents_key else 0)
+            return None
+        ic, sc = part("interchange_amount", "interchange_pct", "interchange_cents"), part("scheme_fee_amount", "scheme_fee_pct")
+        pr = part("acquiring_amount", "acquiring_pct", "processing_cents")
+        est_ic, est_sc, est_pr = (v[0] for v in _estimated_fees(rates, [l["scheme"]], np.array([value]), np.array([count])))
+        if ic is None and pr is not None and invoice.get("pricing_model") == "blended":
+            # Blended MSF includes interchange and scheme fees: estimate those, the rest is the acquirer's margin
+            ic, sc, pr = est_ic, est_sc, max(pr - est_ic - est_sc, 0)
+        rows.append({"payment_method": l["scheme"], "card_type": ct, "net_now": l["scheme"], "amount": value,
+                     "count": count, "ic": est_ic if ic is None else ic, "sc": est_sc if sc is None else sc,
+                     "pr": est_pr if pr is None else pr})
+    if invoice.get("other_fees"):
+        rows.append({"payment_method": "Other fees", "card_type": "n/a", "net_now": "n/a", "amount": 0.0,
+                     "count": 0.0, "ic": 0.0, "sc": 0.0, "pr": invoice["other_fees"]})
+    f = pd.DataFrame(rows, columns=["payment_method", "card_type", "net_now", "amount", "count", "ic", "sc", "pr"])
+    f.attrs.update(source="invoice", network_inferred=False, blended=invoice.get("pricing_model") == "blended")
+    return f
+
+def reform_analysis(f, rates, months):
+    """Monthly interchange / scheme / processing and effective rate: today, after the 1 Oct caps on the same
+    routing, and after the caps plus least-cost routing of dual-network debit via eftpos."""
+    if f is None or f.empty or f["amount"].sum() <= 0:
+        return None
+    f = f.copy()
+    debit, credit = (f["card_type"] == "debit").to_numpy(), (f["card_type"] == "credit").to_numpy()
+    capped = f["net_now"].isin(REFORM_NETWORKS).to_numpy()
+    ic, cnt, amt = f["ic"].to_numpy(float), f["count"].to_numpy(float), f["amount"].to_numpy(float)
+    ic_after = ic.copy()
+    ic_after[debit & capped] = np.minimum(ic, REFORM_DEBIT_CAP * cnt)[debit & capped]
+    ic_after[credit & capped] = np.minimum(ic, REFORM_CONSUMER_CREDIT_CAP * amt)[credit & capped]
+    f["ic_after"] = ic_after
+    # What a debit payment costs via eftpos: the merchant's own eftpos costs if it has eftpos debit, else the rate table
+    e = f[debit & (f["net_now"] == "Eftpos").to_numpy() & (cnt > 0)]
+    if len(e) and e["count"].sum() > 0 and e["amount"].sum() > 0:
+        e_ic_txn = e["ic_after"].sum() / e["count"].sum()
+        e_sc_rate = e["sc"].sum() / e["amount"].sum()
+        eftpos_basis = "the merchant's own eftpos transactions"
+    else:
+        r = _rate_columns(rates, ["Eftpos"]).iloc[0]
+        avg_debit = amt[debit].sum() / max(cnt[debit].sum(), 1)
+        e_ic_txn = r["Interchange ¢"] / 100 + r["Interchange %"] / 100 * avg_debit
+        e_sc_rate = r["Scheme fee %"] / 100
+        eftpos_basis = "the eftpos row of the rate table"
+    e_ic_txn = min(e_ic_txn, REFORM_DEBIT_CAP)
+    dual = debit & f["net_now"].isin(["Visa", "Mastercard"]).to_numpy()
+    via_scheme = ic_after + f["sc"].to_numpy(float)
+    via_eftpos = e_ic_txn * cnt + e_sc_rate * amt
+    move = dual & (via_eftpos < via_scheme)
+    f["suggested"] = np.where(move, "Eftpos", f["net_now"])
+    f["ic_lcr"] = np.where(move, e_ic_txn * cnt, ic_after)
+    f["sc_lcr"] = np.where(move, e_sc_rate * amt, f["sc"])
+    revenue = amt.sum() / months
+    stages = {}
+    for name, icc, scc in [("today", "ic", "sc"), ("after", "ic_after", "sc"), ("lcr", "ic_lcr", "sc_lcr")]:
+        t = {"interchange": f[icc].sum() / months, "scheme": f[scc].sum() / months, "processing": f["pr"].sum() / months}
+        t["total"] = sum(t.values())
+        t["rate"] = t["total"] / revenue * 100 if revenue else 0.0
+        stages[name] = t
+    return {"frame": f, "stages": stages, "revenue": revenue, "saving": stages["today"]["total"] - stages["lcr"]["total"],
+            "routing_saving": stages["after"]["total"] - stages["lcr"]["total"], "eftpos_ic_txn": e_ic_txn,
+            "eftpos_sc_rate": e_sc_rate, "eftpos_basis": eftpos_basis, "source": f.attrs.get("source", ""),
+            "network_inferred": f.attrs.get("network_inferred", False), "blended": f.attrs.get("blended", False),
+            "unsplit_value": amt[(~f["card_type"].isin(["debit", "credit"]) & f["net_now"].isin(REFORM_NETWORKS)
+                                 ).to_numpy()].sum() / months}
+
+def debit_routing_rows(f, column, months):
+    """[(scheme, debit $/mo, {network: % of that scheme's debit value})] for the routing cards."""
+    d = f[(f["card_type"] == "debit") & f["payment_method"].isin(["Visa", "Mastercard", "Eftpos"])]
+    rows = []
+    for m in [x for x in ["Visa", "Mastercard", "Eftpos"] if x in set(d["payment_method"])]:
+        sub = d[d["payment_method"] == m]
+        shares = (sub.groupby(column)["amount"].sum() / sub["amount"].sum() * 100).to_dict()
+        rows.append((m, sub["amount"].sum() / months, shares))
+    return rows
+
+def debit_network_shares(f, column):
+    d = f[(f["card_type"] == "debit") & f[column].isin(["Visa", "Mastercard", "Eftpos"])]
+    return (d.groupby(column)["amount"].sum() / max(d["amount"].sum(), 1e-9) * 100).to_dict()
 
 # ---------- INVOICE-DRIVEN ANALYSIS (when there's no transaction CSV) ----------
 
@@ -755,35 +864,6 @@ def invoice_mix(invoice):
             ct = {"Eftpos": "debit", "Amex": "credit"}.get(l["scheme"], "all")
         rows.append({"scheme": l["scheme"], "card_type": ct, "value": l["value"], "count": l.get("transactions") or 0})
     return pd.DataFrame(rows, columns=["scheme", "card_type", "value", "count"])
-
-def invoice_debit_routing(invoice, months):
-    """Debit value by network from the invoice, and the post-reform least-cost suggestion for each line
-    (eftpos when the line's average sale is at or above LCR_THRESHOLD). None if the invoice has no debit split."""
-    lines = []
-    for l in invoice.get("schemes", []):
-        is_debit = l["card_type"] == "debit" or (l["scheme"] == "Eftpos" and l["card_type"] == "all")
-        if is_debit and l["scheme"] in ("Eftpos", "Visa", "Mastercard") and l.get("value"):
-            lines.append(l)
-    if not lines:
-        return None
-    out, saving = [], 0.0
-    for l in lines:
-        txns = l.get("transactions")
-        avg = l["value"] / txns if txns else None
-        to_eftpos = l["scheme"] != "Eftpos" and avg is not None and avg >= LCR_THRESHOLD
-        if to_eftpos:
-            post_now = min(avg * SCHEME_DEBIT_RATE.get(l["scheme"], VISA_DEBIT_ADVALOREM), POST_REFORM_DEBIT_CAP)
-            saving += max(post_now - EFTPOS_FLAT_FEE, 0) * txns / months
-        out.append({"scheme": l["scheme"], "value": l["value"] / months, "txns": (txns or 0) / months, "avg": avg,
-                    "suggested": "Eftpos" if (to_eftpos or l["scheme"] == "Eftpos") else l["scheme"]})
-    total = sum(r["value"] for r in out)
-    now = {}
-    nxt = {}
-    for r in out:
-        now[r["scheme"]] = now.get(r["scheme"], 0) + r["value"] / total * 100
-        nxt[r["suggested"]] = nxt.get(r["suggested"], 0) + r["value"] / total * 100
-    return {"lines": out, "total": total, "now": now, "next": nxt, "saving": saving,
-            "unknown_avg": any(r["avg"] is None for r in out)}
 
 # ---------- DATA HELPERS ----------
 
@@ -1535,12 +1615,6 @@ def split_bar(shares):
     to = "".join(f'<span>→ {logo(n, 16)} <b>{v:.0f}%</b></span>' for n, v in ordered if v >= 0.5)
     return f'<div class="split">{segs}</div><div class="route-to">{to}</div>'
 
-def routing_rows(rows, n_months):
-    return "".join(
-        f'<div class="route-row"><div class="route-head"><span>{logo(m, 20)}&nbsp; {m} debit</span>'
-        f'<span class="muted">{count / n_months:,.0f} txns/mo</span></div>{split_bar(shares)}</div>'
-        for m, count, shares in rows)
-
 def render_payment_mix(mix, n_months, caption):
     """Donut per card type (debit / credit, or 'all' when the source doesn't split them) by scheme value."""
     types = [t for t in ["debit", "credit", "all"] if t in set(mix["card_type"])]
@@ -1585,14 +1659,27 @@ if df is None and invoice is None:
 
 # ----- Row 1: payment mix, current and suggested routing -----
 is_surcharging, surcharge_rate = False, 0.0
-debit = inv_routing = None
 overall_rate, at_risk = None, 0
+reform = None
+
+def current_rate_table(methods):
+    """The Fee Assumptions table as it stands, including any edits made in the card below (kept in its widget state)."""
+    table = default_fee_table(methods, invoice_overrides)
+    edits = st.session_state.get(f"fees_{data_key}", {}) or {}
+    for idx, changes in (edits.get("edited_rows", {}) if isinstance(edits, dict) else {}).items():
+        for column, value in changes.items():
+            if column in FEE_COLUMNS and int(idx) < len(table):
+                table.loc[int(idx), column] = value
+    return table
+
 if df is not None:
     stats = build_data_summary(df)
     overall_rate = (df["status"] == "approved").mean() * 100
-    debit = analyse_debit_routing(df)
+    rates_now = current_rate_table(sorted(df["payment_method"].dropna().unique()))
+    reform = reform_analysis(costs_from_transactions(df, rates_now), rates_now, n_months)
 elif invoice:
-    inv_routing = invoice_debit_routing(invoice, inv_months)
+    rates_now = current_rate_table(sorted({l["scheme"] for l in invoice.get("schemes", [])}))
+    reform = reform_analysis(costs_from_invoice(invoice, rates_now), rates_now, inv_months)
 
 if df is not None or invoice:
     r1c1, r1c2, r1c3 = st.columns(3, gap="medium")
@@ -1622,64 +1709,65 @@ if df is not None or invoice:
     with r1c2:
         with st.container(key="card_routing_now"):
             card_title("Current Debit Routing")
-            if df is not None and debit is not None and not debit.empty:
-                lcr_now = (debit["network"] == "Eftpos").mean() * 100
-                st.markdown(routing_rows(routing_split(debit, "network"), n_months), unsafe_allow_html=True)
-                st.markdown(f'<div class="highlight"><span class="lbl">Debit routed<br>via eftpos today:</span>'
-                            f'<span class="num">{lcr_now:.0f}%</span></div>', unsafe_allow_html=True)
-                if debit.attrs.get("network_inferred"):
+            rows = debit_routing_rows(reform["frame"], "net_now", n_months) if reform else []
+            if rows:
+                st.markdown("".join(
+                    f'<div class="route-row"><div class="route-head"><span>{logo(m, 20)}&nbsp; {m} debit</span>'
+                    f'<span class="muted">{fmt_money(v)}/mo</span></div>{split_bar(sh)}</div>' for m, v, sh in rows),
+                    unsafe_allow_html=True)
+                eftpos_now = debit_network_shares(reform["frame"], "net_now").get("Eftpos", 0)
+                st.markdown(f'<div class="highlight"><span class="lbl">Debit value routed<br>via eftpos today:</span>'
+                            f'<span class="num">{eftpos_now:.0f}%</span></div>', unsafe_allow_html=True)
+                if reform["network_inferred"]:
                     st.markdown('<div class="route-note">No network column in the file, so each debit '
                                 'transaction\'s network is taken from its card scheme (EFTPOS = routed via eftpos, '
-                                'VISA/MC DEBIT = routed via the scheme).</div>', unsafe_allow_html=True)
-                st.markdown(f'<div class="route-note">Interchange on debit today: '
-                            f'{fmt_money(debit["cost_today"].sum() / n_months)}/mo · '
-                            f'{fmt_money(debit["cost_post_current"].sum() / n_months)}/mo from 1 Oct on this routing. '
-                            f'Credit always runs on its own scheme.</div>', unsafe_allow_html=True)
-            elif inv_routing:
-                rows = "".join(
-                    f'<div class="route-row"><div class="route-head"><span>{logo(l["scheme"], 20)}&nbsp; '
-                    f'{l["scheme"]} debit</span><span class="muted">{fmt_money(l["value"])}/mo'
-                    + (f' · avg ${l["avg"]:,.0f}' if l["avg"] else "") + '</span></div></div>'
-                    for l in inv_routing["lines"])
-                st.markdown(f'<div class="route-note">Debit sales by the network they ran on:</div>'
-                            f'{split_bar(inv_routing["now"])}{rows}', unsafe_allow_html=True)
-                st.markdown(f'<div class="highlight"><span class="lbl">Debit routed<br>via eftpos today:</span>'
-                            f'<span class="num">{inv_routing["now"].get("Eftpos", 0):.0f}%</span></div>',
-                            unsafe_allow_html=True)
+                                'VISA/MC DEBIT = routed via the scheme). Credit always runs on its own scheme.</div>',
+                                unsafe_allow_html=True)
             else:
-                empty_state("No debit breakdown", "Routing needs debit sales split by network - either an invoice "
-                            "that itemises eftpos / Visa debit / Mastercard debit, or a transactions CSV with a "
-                            "<code>network</code> column.")
+                empty_state("No debit breakdown", "Routing needs debit sales split by network - an invoice that "
+                            "itemises eftpos / Visa debit / Mastercard debit, or a transactions file with a "
+                            "debit/credit column.")
 
     with r1c3:
         with st.container(key="card_routing_next"):
             card_title("Suggested Routing · 1 Oct")
-            if df is not None and debit is not None and not debit.empty:
-                lcr_next = (debit["suggested"] == "Eftpos").mean() * 100
-                st.markdown(routing_rows(routing_split(debit, "suggested"), n_months), unsafe_allow_html=True)
-                st.markdown(f'<div class="route-note">Send dual-network debit via eftpos when the sale is '
-                            f'${LCR_THRESHOLD:,.0f} or more (5¢ vs up to 8¢); smaller sales stay on the card\'s '
-                            f'scheme. {lcr_next:.0f}% of debit via eftpos.</div>', unsafe_allow_html=True)
-            elif inv_routing:
-                st.markdown(f'<div class="route-note">Debit sales after least-cost routing:</div>'
-                            f'{split_bar(inv_routing["next"])}', unsafe_allow_html=True)
-                rows = "".join(
-                    f'<div class="route-row"><div class="route-head"><span>{logo(l["scheme"], 20)}&nbsp; '
-                    f'{l["scheme"]} debit → {logo(l["suggested"], 16)}</span><span class="muted">'
-                    + ("already eftpos" if l["scheme"] == "Eftpos" else
-                       ("route via eftpos" if l["suggested"] == "Eftpos" else
-                        ("avg under $10 - keep" if l["avg"] else "no txn count")))
-                    + '</span></div></div>' for l in inv_routing["lines"])
-                st.markdown(rows, unsafe_allow_html=True)
-                st.markdown(f'<div class="highlight"><span class="lbl">Interchange saving<br>from 1 Oct:</span>'
-                            f'<span class="num">+{fmt_money(inv_routing["saving"])}/mo</span></div>',
-                            unsafe_allow_html=True)
-                st.markdown(f'<div class="route-note">Eftpos is cheaper for debit sales of ${LCR_THRESHOLD:,.0f}+ '
-                            f'(5¢ vs up to the 8¢ cap). Based on each line\'s average sale.'
-                            + (" Some lines have no transaction count, so their saving isn't included."
-                               if inv_routing["unknown_avg"] else "") + '</div>', unsafe_allow_html=True)
+            if reform:
+                rows = debit_routing_rows(reform["frame"], "suggested", n_months)
+                if rows:
+                    st.markdown("".join(
+                        f'<div class="route-row"><div class="route-head"><span>{logo(m, 20)}&nbsp; {m} debit</span>'
+                        f'<span class="muted">{fmt_money(v)}/mo</span></div>{split_bar(sh)}</div>' for m, v, sh in rows),
+                        unsafe_allow_html=True)
+                t, a1, l = reform["stages"]["today"], reform["stages"]["after"], reform["stages"]["lcr"]
+                def cell(v, base=None):
+                    same = base is not None and abs(v - base) < 0.5
+                    return f'<td class="{"same" if same else ""}">{fmt_money(v)}</td>'
+                st.markdown(
+                    '<table class="reform"><tr><th></th><th>Today</th><th>1 Oct</th><th>+ routing</th></tr>'
+                    + "".join(f'<tr><td>{label}</td>{cell(t[k])}{cell(a1[k], t[k])}{cell(l[k], a1[k])}</tr>'
+                              for label, k in [("Interchange", "interchange"), ("Scheme fees", "scheme"),
+                                               ("Processing", "processing")])
+                    + f'<tr class="tot"><td>Total</td>{cell(t["total"])}{cell(a1["total"])}{cell(l["total"])}</tr>'
+                    + f'<tr class="rate"><td>Effective rate</td><td>{t["rate"]:.2f}%</td><td>{a1["rate"]:.2f}%</td>'
+                      f'<td>{l["rate"]:.2f}%</td></tr></table>', unsafe_allow_html=True)
+                st.markdown(f'<div class="highlight"><span class="lbl">Fee saving<br>from 1 Oct:</span>'
+                            f'<span class="num">{fmt_money(reform["saving"])}/mo</span></div>', unsafe_allow_html=True)
+                notes = [f"Fees from the {reform['source']}. Interchange moves to the caps (debit "
+                         f"{REFORM_DEBIT_CAP * 100:.0f}¢, consumer credit {REFORM_CONSUMER_CREDIT_CAP * 100:.1f}%); scheme "
+                         "fees and processing stay the same. Amex isn't capped.",
+                         f"Routing moves dual-network debit to eftpos where eftpos interchange + scheme fee "
+                         f"(≈{reform['eftpos_ic_txn'] * 100:.1f}¢ + {reform['eftpos_sc_rate'] * 100:.2f}%, from "
+                         f"{reform['eftpos_basis']}) is cheaper: {fmt_money(reform['routing_saving'])}/mo of the saving."]
+                if reform["blended"]:
+                    notes.append("Blended pricing: interchange and scheme fees are estimated within the MSF, and the "
+                                 "merchant only gets the saving if the acquirer passes it through.")
+                if reform["unsplit_value"]:
+                    notes.append(f"{fmt_money(reform['unsplit_value'])}/mo of eftpos/Visa/Mastercard sales has no "
+                                 "debit/credit information, so no cap is applied to it - add or pick a debit/credit "
+                                 "column to include it.")
+                st.markdown('<div class="route-note">' + " ".join(notes) + '</div>', unsafe_allow_html=True)
             else:
-                empty_state("No debit breakdown", "Suggestions need debit sales split by network.")
+                empty_state("No fee data", "Upload an invoice or a transactions file to see the reform's effect.")
 
     # Surcharge impact of the 1 Oct ban, net of the routing saving
     with st.container(key="card_surcharge"):
@@ -1699,17 +1787,15 @@ if df is not None or invoice:
             else:
                 surcharge_rate = st.number_input("Current surcharge %", min_value=0.0, max_value=5.0, value=1.0,
                                                  step=0.1, disabled=not is_surcharging, key="surcharge_rate")
+        saving = reform["saving"] if reform else 0.0
         if df is not None:
             base = surcharge_base_from_df(df, n_months)
-            saving = ((debit["cost_post_current"].sum() - debit["cost_post_suggested"].sum()) / n_months
-                      if debit is not None else 0.0)
         else:
             lines = invoice.get("schemes", [])
             covered = sum(l.get("value") or 0 for l in lines if l["scheme"] in SURCHARGE_BAN_NETWORKS)
             value, _ = invoice_totals(invoice)
             amex = sum(l.get("value") or 0 for l in lines if l["scheme"] == "Amex")
             base = (covered if covered else max((value or 0) - amex, 0)) / n_months
-            saving = inv_routing["saving"] if inv_routing else 0.0
         imp = surcharge_impact(base, monthly_revenue, saving, is_surcharging, surcharge_rate)
         if file_surcharge is not None:
             lost = file_surcharge if is_surcharging else 0.0
@@ -1722,7 +1808,7 @@ if df is not None or invoice:
                 f'{logo("Mastercard", 14)})</span><span>{fmt_money(imp["base"])}/mo</span></div>'
                 f'<div class="line"><span>Surcharge income lost</span>'
                 f'<span class="neg">−{fmt_money(imp["lost"])}/mo</span></div>'
-                f'<div class="line"><span>Saving from suggested routing</span>'
+                f'<div class="line"><span>Fee saving from 1 Oct (caps + routing)</span>'
                 f'<span class="pos">+{fmt_money(imp["saving"])}/mo</span></div>'
                 f'<div class="route-note">Amex ({logo("Amex", 14)}) surcharges aren\'t covered by the ban.</div></div>',
                 unsafe_allow_html=True)
@@ -1824,19 +1910,15 @@ def _int_split(shares):
 
 adv_eftpos, adv_visa, adv_mc, adv_debit_pct = 35, 40, 25, 60
 adv_avg_debit = float(round(atv, 2)) if atv else 45.0
-if df is not None and debit is not None and not debit.empty and monthly_revenue:
-    _net_share = debit["network"].value_counts(normalize=True) * 100
-    adv_eftpos, adv_visa, adv_mc = _int_split([_net_share.get("Eftpos", 0), _net_share.get("Visa", 0),
-                                               _net_share.get("Mastercard", 0)])
-    adv_debit_pct = int(round(debit["amount"].sum() / n_months / monthly_revenue * 100))
-    adv_avg_debit = float(round(debit["amount"].mean(), 2))
-elif inv_routing and monthly_revenue:
-    adv_eftpos, adv_visa, adv_mc = _int_split([inv_routing["now"].get("Eftpos", 0), inv_routing["now"].get("Visa", 0),
-                                               inv_routing["now"].get("Mastercard", 0)])
-    adv_debit_pct = min(int(round(inv_routing["total"] / monthly_revenue * 100)), 100)
-    _dtx = sum(l["txns"] for l in inv_routing["lines"])
-    if _dtx:
-        adv_avg_debit = float(round(inv_routing["total"] / _dtx, 2))
+if reform and monthly_revenue:
+    _fr = reform["frame"]
+    _deb = _fr[(_fr["card_type"] == "debit") & _fr["net_now"].isin(["Eftpos", "Visa", "Mastercard"])]
+    if not _deb.empty:
+        _sh = debit_network_shares(_fr, "net_now")
+        adv_eftpos, adv_visa, adv_mc = _int_split([_sh.get("Eftpos", 0), _sh.get("Visa", 0), _sh.get("Mastercard", 0)])
+        adv_debit_pct = min(int(round(_deb["amount"].sum() / n_months / monthly_revenue * 100)), 100)
+        if _deb["count"].sum():
+            adv_avg_debit = float(round(_deb["amount"].sum() / _deb["count"].sum(), 2))
 
 # ----- Row 3: routing advisor -----
 r3c1, r3c2, r3c3 = st.columns(3, gap="medium")
