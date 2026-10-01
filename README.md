@@ -9,11 +9,16 @@ routing and fee estimates.
 
 ## Transaction data
 
-Upload a CSV with `date, amount, payment_method, status, decline_reason`. Two optional columns unlock the
-payment-mix and routing views:
+Optional. Upload a transactions export as **CSV, TSV, Excel (.xlsx) or JSON**, in whatever layout your bank,
+gateway or POS produces. The app finds the header row (skipping title lines), then matches the date, amount,
+card scheme, status, decline reason, debit/credit and network columns by name and by their contents. If it can't
+match the essentials it asks Claude, sending only the column names, the first 15 rows (card numbers masked) and the
+distinct values of short code-like columns, never the whole file. Values are standardised: "VISA DEBIT" → Visa +
+debit, "$1,234.50" → 1234.50, Australian day-first dates, codes such as VI/MC/EP decoded. Refunds, voids and pending
+rows are left out. The status line under the uploader shows which column was used for what.
 
-- `card_type`: `debit` or `credit`
-- `network`: the network the transaction was actually processed on (`eftpos`, `visa`, `mastercard`, `amex`)
+The downloadable template shows the app's own column names
+(`date, amount, payment_method, status, decline_reason, card_type, network`).
 
 ## Logos
 
