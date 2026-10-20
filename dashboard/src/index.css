@@ -1,0 +1,49 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --color-bg: #f4f5f3;
+  --color-ink: #202c29;
+  --color-brand: #26734d;
+  --color-brand-dark: #1d5c3d;
+  --color-brand-soft: #e3efe7;
+  --color-sage: #e5eae2;
+  --color-card: #ffffff;
+  --color-muted: #737a74;
+  /* Slightly darker than muted, for small text on the page background (keeps 4.5:1 contrast) */
+  --color-subtle: #5f665f;
+  --color-line: #e3e6e1;
+  --color-danger: #c24128;
+  --color-danger-soft: #fbe9e4;
+  --color-amber: #8a5a00;
+  --color-amber-soft: #fbf0d6;
+  --color-info: #2b5f8a;
+  --color-info-soft: #e5eef6;
+}
+
+html,
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'tnum' 1, 'cv11' 1;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.recharts-wrapper:focus,
+.recharts-surface:focus {
+  outline: none;
+}
+
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: var(--color-line);
+  }
+}

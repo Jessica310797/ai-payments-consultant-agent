@@ -1,5 +1,7 @@
 # ai-payments-consultant-agent
 
+> **Paywise dashboard:** a mobile-first web app version lives in [`dashboard/`](dashboard/) (React + Vite + Tailwind).
+
 ## Getting started
 
 Upload a merchant's acquirer **invoice or statement (PDF)** in the header. That alone drives the dashboard:
