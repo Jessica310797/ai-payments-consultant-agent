@@ -81,7 +81,7 @@ export default function Capture() {
     <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: insets.bottom + 32 }}>
       <Card title="Add the Statement">
         <Text style={st.lead}>
-          Photograph each page of the merchant's latest card statement or invoice, or choose the PDF they were emailed.
+          Photograph each page of your latest card statement or invoice, or choose the PDF your provider emailed you.
         </Text>
         <View style={{ gap: 10 }}>
           {Platform.OS !== 'web' ? <Button label="Take a photo" icon={<Camera size={18} color="#FFFFFF" />} onPress={takePhoto} disabled={busy} /> : null}
@@ -132,7 +132,7 @@ export default function Capture() {
         >
           <View style={[st.box, consent ? st.boxOn : null]}>{consent ? <Text style={st.tick}>✓</Text> : null}</View>
           <Text style={st.consentText}>
-            The merchant has agreed to me using this statement to review their card fees.
+            I'm authorised to share this statement so PayNavigate can review my business's card fees.
           </Text>
         </Pressable>
         <Note>

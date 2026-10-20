@@ -21,7 +21,6 @@ export default function Statements() {
     const go = () => deleteCheck(c.id).then(() => listChecks().then(setChecks));
     const name = c.report.merchant_name || 'this merchant';
     if (Platform.OS === 'web') {
-      // eslint-disable-next-line no-alert
       if (window.confirm(`Delete the check for ${name}?`)) go();
     } else {
       Alert.alert('Delete check?', `Delete the check for ${name} from this phone?`, [
@@ -36,7 +35,7 @@ export default function Statements() {
       <Button label="Photograph a new statement" onPress={() => { reset(); router.push('/capture'); }} />
       <Card title="Checked on this phone">
         {checks.length === 0 ? (
-          <Note>Statements you check are saved on this phone so you can show them again on a follow-up visit.</Note>
+          <Note>Statements you check are saved on this phone so you can look at them again later.</Note>
         ) : (
           checks.map((c, i) => (
             <Tap key={c.id} onPress={() => open(c)} onLongPress={() => remove(c)} label={`${c.report.merchant_name || 'Unnamed merchant'}. Long-press to delete.`} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, borderTopWidth: i ? 1 : 0, borderColor: C.line }}>

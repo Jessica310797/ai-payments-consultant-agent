@@ -1,4 +1,4 @@
-"""API for the Payments Consultant mobile app.
+"""API for the PayNavigate mobile app.
 
 The app never holds the Anthropic API key: it sends statement photos / PDFs here, this server asks Claude to read
 them, and the shared calculations in payments_core.py produce the results.
@@ -6,7 +6,8 @@ them, and the shared calculations in payments_core.py produce the results.
 Environment:
   ANTHROPIC_API_KEY        required
   ANTHROPIC_WORKSPACE_ID   optional (keys not scoped to a workspace)
-  APP_ACCESS_KEY           optional but recommended: the app must send it as the X-App-Key header
+  APP_ACCESS_KEY           optional: the app must send it as the X-App-Key header
+  DATABASE_URL, ADMIN_KEY  merchant accounts - see accounts.py
 """
 import os
 import sys
@@ -15,15 +16,17 @@ import hmac
 from collections import defaultdict, deque
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import payments_core as core  # noqa: E402
+from api.accounts import CurrentUser, current_user, router as accounts_router  # noqa: E402
 
-app = FastAPI(title="Payments Consultant API", version="1.0")
+app = FastAPI(title="PayNavigate API", version="1.1")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.include_router(accounts_router)
 
 READS_PER_HOUR = int(os.environ.get("READS_PER_HOUR", "30"))
 _reads = defaultdict(deque)
@@ -33,9 +36,9 @@ def check_key(x_app_key: str | None = Header(default=None)):
     if expected and not hmac.compare_digest(x_app_key or "", expected):
         raise HTTPException(401, "This app isn't authorised to use the server - check the app's access key.")
 
-def limit_reads(request: Request):
-    """Each statement read costs Claude usage, so cap reads per device/IP per hour."""
-    who = request.headers.get("x-device-id") or (request.client.host if request.client else "unknown")
+def limit_reads(user: CurrentUser = Depends(current_user)):
+    """Each statement read costs Claude usage, so cap reads per signed-in user per hour."""
+    who = f"user:{user.id}"
     now, q = time.time(), _reads[who]
     while q and now - q[0] > 3600:
         q.popleft()
@@ -81,13 +84,14 @@ def _media_type(f: UploadFile, data: bytes):
 @app.get("/")
 def root():
     """Opening the server's address in a browser shows it's running (the app itself uses the /v1 routes)."""
-    return {"ok": True, "service": "Payments Consultant API", "health": "/health"}
+    return {"ok": True, "service": "PayNavigate API", "health": "/health"}
 
 @app.get("/health")
 def health():
     return {"ok": True}
 
-@app.post("/v1/invoice/read", dependencies=[Depends(check_key), Depends(limit_reads)])
+# Statement routes need a signed-in merchant (Authorization: Bearer <token>) as well as the app key.
+@app.post("/v1/invoice/read", dependencies=[Depends(check_key), Depends(current_user), Depends(limit_reads)])
 async def read_invoice(files: list[UploadFile] = File(...)):
     """Statement → editable draft + checks. Send one PDF, or photos of the pages in order."""
     parts = []
@@ -108,12 +112,12 @@ async def read_invoice(files: list[UploadFile] = File(...)):
 def _checks(invoice):
     return [{"level": lvl, "message": msg} for lvl, msg in core.invoice_checks(invoice)]
 
-@app.post("/v1/invoice/check", dependencies=[Depends(check_key)])
+@app.post("/v1/invoice/check", dependencies=[Depends(check_key), Depends(current_user)])
 def check_draft(draft: Draft):
     """Re-run the consistency checks on edited figures."""
     return {"checks": _checks(core.draft_to_invoice(draft.model_dump()))}
 
-@app.post("/v1/report", dependencies=[Depends(check_key)])
+@app.post("/v1/report", dependencies=[Depends(check_key), Depends(current_user)])
 def report(draft: Draft):
     """Confirmed figures → the results screen (all figures per month)."""
     return core.invoice_report(core.draft_to_invoice(draft.model_dump()))

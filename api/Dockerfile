@@ -5,6 +5,6 @@ WORKDIR /srv
 COPY api/requirements.txt api/requirements.txt
 RUN pip install --no-cache-dir -r api/requirements.txt
 COPY payments_core.py .
-COPY api/main.py api/main.py
+COPY api/__init__.py api/main.py api/accounts.py api/
 # Railway (and most hosts) set PORT; 8000 when running locally.
 CMD ["sh", "-c", "uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

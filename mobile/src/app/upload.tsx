@@ -22,7 +22,7 @@ function StatementSection() {
   const { reset } = useVisit();
   return (
     <Card>
-      <CardHeader title="Card statement or invoice" subtitle="Photograph each page, or choose the PDF the merchant was emailed. Claude reads the fees, you check the figures, then see the 1 October impact and add it to the dashboard." />
+      <CardHeader title="Card statement or invoice" subtitle="Photograph each page of your latest statement, or choose the PDF your provider emailed you. Claude reads the fees, you check the figures, then see the 1 October impact and add it to your dashboard." />
       <Button
         label="Photograph a statement"
         icon={<Camera size={18} color="#FFFFFF" />}
@@ -70,7 +70,7 @@ function TransactionsSection() {
             <CircleCheck size={16} color={C.brand} />
             <Text style={{ flex: 1, fontSize: 13 }}>Dashboard is using <Text style={{ fontSize: 13, fontWeight: '600' }}>{uploaded.source}</Text></Text>
           </View>
-          <Button kind="ghost" label="Switch back to demo data" onPress={() => setUploadedData(null)} />
+          <Button kind="ghost" label="Remove this data" onPress={() => setUploadedData(null)} />
         </View>
       ) : null}
       <Button kind="secondary" label="Choose a CSV file" icon={<FileText size={16} color={C.ink} />} onPress={choose} busy={busy} />

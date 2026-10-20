@@ -2,9 +2,10 @@ import type { DemoState } from '@shared/data/source';
 import { dateTime } from '@shared/lib/format';
 import Constants from 'expo-constants';
 import { router, type Href } from 'expo-router';
-import { ChevronRight } from 'lucide-react-native';
-import { View } from 'react-native';
+import { ChevronRight, UserRound } from 'lucide-react-native';
+import { Switch, View } from 'react-native';
 import { Bullets, Button, Card, PageTitle, Row, Screen, Segmented, Tap, Text } from '../../components/ui';
+import { useAuth } from '../../lib/auth';
 import { useData } from '../../lib/data';
 import { C } from '../../lib/theme';
 
@@ -15,14 +16,26 @@ const LINKS: { to: Href; label: string; help: string }[] = [
   { to: '/upload', label: 'Upload data', help: 'Statement photos, transactions CSV, invoices' },
   { to: '/statements', label: 'Statement checks', help: 'Statements read on this phone' },
   { to: '/notifications', label: 'Notifications', help: 'Alerts from your data' },
+  { to: '/account', label: 'Account', help: 'Log out or delete your account' },
   { to: '/settings', label: 'Settings', help: 'Server address and privacy' },
 ];
 
 export default function More() {
-  const { data, uploaded, setUploadedData, demoState, setDemoState } = useData();
+  const { data, uploaded, setUploadedData, demoState, setDemoState, showDemo, setShowDemo } = useData();
+  const { profile } = useAuth();
   return (
     <Screen tabs>
       <PageTitle title="More" />
+      <Tap onPress={() => router.push('/account')} label="Account" style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: C.card, borderWidth: 1, borderColor: C.line, borderRadius: 16, padding: 16 }}>
+        <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: C.sage, alignItems: 'center', justifyContent: 'center' }}>
+          <UserRound size={20} color={C.brandDark} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={{ fontSize: 15, fontWeight: '600' }} numberOfLines={1}>{profile?.merchant.name ?? 'Account'}</Text>
+          <Text style={{ fontSize: 13, color: C.subtle }} numberOfLines={1}>{profile?.email}</Text>
+        </View>
+        <ChevronRight size={18} color={C.muted} />
+      </Tap>
       <Card style={{ padding: 0, gap: 0 }}>
         {LINKS.map((l, i) => (
           <Tap key={String(l.to)} onPress={() => router.push(l.to)} label={l.label} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 13, borderTopWidth: i ? 1 : 0, borderColor: C.line }}>
@@ -42,7 +55,14 @@ export default function More() {
             <Row label="Updated" value={dateTime(data.meta.lastUpdated)} />
           </View>
         ) : <Text style={{ color: C.subtle }}>Not loaded.</Text>}
-        {uploaded ? <Button kind="secondary" label="Switch back to demo data" onPress={() => setUploadedData(null)} /> : null}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 14, fontWeight: '500' }}>Show demo data</Text>
+            <Text style={{ fontSize: 12, color: C.subtle }}>A fictional merchant, to explore what PayNavigate shows</Text>
+          </View>
+          <Switch value={showDemo} onValueChange={setShowDemo} trackColor={{ true: C.brand, false: C.line }} thumbColor="#FFFFFF" accessibilityLabel="Show demo data" />
+        </View>
+        {uploaded && !showDemo ? <Button kind="secondary" label="Remove the data added on this phone" onPress={() => setUploadedData(null)} /> : null}
       </Card>
       <Card title="How the numbers are worked out">
         <Bullets muted items={[

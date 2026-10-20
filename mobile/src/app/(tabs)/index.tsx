@@ -3,7 +3,7 @@ import { Bell, ChartColumn, Search } from 'lucide-react-native';
 import { View } from 'react-native';
 import { AuditCard, CostDriversCard, NextActions, OctoberPanel, SummaryCard } from '../../components/dashboard';
 import { DataGate, Provenance } from '../../components/data-ui';
-import { EmptyState, PageTitle, Screen, Tap, Text } from '../../components/ui';
+import { Button, EmptyState, PageTitle, Screen, Tap, Text } from '../../components/ui';
 import { notificationsFor, useData } from '../../lib/data';
 import { C } from '../../lib/theme';
 
@@ -35,8 +35,21 @@ function Header() {
   );
 }
 
+function DemoBanner() {
+  const { showDemo, setShowDemo } = useData();
+  if (!showDemo) return null;
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: C.amberSoft, borderRadius: 12, paddingVertical: 8, paddingLeft: 12, paddingRight: 4 }}>
+      <Text style={{ flex: 1, fontSize: 13, color: C.amber }}>You're looking at demo data for a fictional merchant.</Text>
+      <Tap onPress={() => setShowDemo(false)} label="Switch to your data" style={{ paddingHorizontal: 8, paddingVertical: 6 }}>
+        <Text style={{ fontSize: 13, fontWeight: '600', color: C.amber }}>Show mine</Text>
+      </Tap>
+    </View>
+  );
+}
+
 export default function Home() {
-  const { data, derived } = useData();
+  const { data, derived, setShowDemo } = useData();
   return (
     <Screen tabs>
       <Header />
@@ -45,10 +58,12 @@ export default function Home() {
         title="Payments overview"
         subtitle={data && derived ? `${derived.empty ? 'No reporting period' : derived.period.label} · ${data.merchant.name}` : undefined}
       />
+      <DemoBanner />
       <DataGate>
         {derived?.empty ? (
           <View style={{ gap: 16 }}>
-            <EmptyState title="No payment data yet" body="Photograph a statement or upload a transactions file to see costs, audit findings and recommended actions." action={{ label: 'Upload data', onPress: () => router.push('/upload') }} />
+            <EmptyState title="No payment data yet" body="Photograph your latest card statement, or upload a transactions file, to see your costs, audit findings and recommended actions." action={{ label: 'Add your data', onPress: () => router.push('/upload') }} />
+            <Button kind="secondary" label="Explore with demo data" onPress={() => setShowDemo(true)} />
             <OctoberPanel />
           </View>
         ) : (

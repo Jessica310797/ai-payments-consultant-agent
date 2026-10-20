@@ -1,11 +1,22 @@
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
+import { sessionToken, type Profile, type Session } from './session';
 import { deviceId, loadSettings } from './storage';
 import type { Check, Draft, Page, Report } from './types';
 
 const extra = (Constants.expoConfig?.extra ?? {}) as { apiUrl?: string; accessKey?: string };
 
-export class ApiError extends Error {}
+export class ApiError extends Error {
+  constructor(message: string, readonly status = 0) {
+    super(message);
+  }
+}
+
+/** Called when the server says the session has ended, so the app can go back to the login screen. */
+let onSignedOut: (() => void) | null = null;
+export const setSignedOutHandler = (fn: (() => void) | null) => {
+  onSignedOut = fn;
+};
 
 async function config() {
   const saved = await loadSettings();
@@ -24,9 +35,14 @@ async function call<T>(path: string, init: RequestInit, timeoutMs: number): Prom
     res = await fetch(`${apiUrl}${path}`, {
       ...init,
       signal: controller.signal,
-      headers: { ...(init.headers ?? {}), 'X-App-Key': accessKey, 'X-Device-Id': await deviceId() },
+      headers: {
+        ...(init.headers ?? {}),
+        'X-App-Key': accessKey,
+        'X-Device-Id': await deviceId(),
+        ...(sessionToken() ? { Authorization: `Bearer ${sessionToken()}` } : {}),
+      },
     });
-  } catch (e) {
+  } catch {
     throw new ApiError(
       controller.signal.aborted
         ? 'The server took too long to answer - check the signal and try again.'
@@ -38,7 +54,8 @@ async function call<T>(path: string, init: RequestInit, timeoutMs: number): Prom
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
     const detail = typeof body?.detail === 'string' ? body.detail : `Server error (${res.status}).`;
-    throw new ApiError(detail);
+    if (res.status === 401 && sessionToken() && !path.startsWith('/v1/auth/login') && !path.startsWith('/v1/auth/delete-account')) onSignedOut?.();
+    throw new ApiError(detail, res.status);
   }
   return body as T;
 }
@@ -66,3 +83,16 @@ const json = (body: unknown): RequestInit => ({
 export const checkDraft = (draft: Draft) => call<{ checks: Check[] }>('/v1/invoice/check', json(draft), 30_000);
 
 export const buildReport = (draft: Draft) => call<Report>('/v1/report', json(draft), 30_000);
+
+// ---------- accounts ----------
+
+export const logIn = (email: string, password: string) => call<Session>('/v1/auth/login', json({ email, password }), 30_000);
+
+export const acceptInvite = (code: string, email: string, password: string) =>
+  call<Session>('/v1/auth/invite', json({ code, email, password }), 30_000);
+
+export const fetchProfile = () => call<Profile>('/v1/auth/me', { method: 'GET' }, 20_000);
+
+export const logOut = () => call<{ ok: boolean }>('/v1/auth/logout', { method: 'POST' }, 10_000);
+
+export const deleteAccount = (password: string) => call<{ ok: boolean }>('/v1/auth/delete-account', json({ password }), 30_000);

@@ -77,19 +77,15 @@ export function CostTrendChart({ series, current, height = 176 }: { series: Mont
 function Ring({ parts, size, stroke, colour }: { parts: { key: string; share: number }[]; size: number; stroke: number; colour: (k: string, i: number) => string }) {
   const r = (size - stroke) / 2;
   const circ = 2 * Math.PI * r;
-  let offset = 0;
+  const lengths = parts.map((p) => (p.share / 100) * circ);
+  const offsets = lengths.map((_, i) => lengths.slice(0, i).reduce((a, l) => a + l, 0));
   return (
     <Svg width={size} height={size} style={{ transform: [{ rotate: '-90deg' }] }}>
       <Circle cx={size / 2} cy={size / 2} r={r} stroke={C.line} strokeWidth={stroke} fill="none" />
-      {parts.map((p, i) => {
-        const len = (p.share / 100) * circ;
-        const el = (
-          <Circle key={p.key} cx={size / 2} cy={size / 2} r={r} stroke={colour(p.key, i)} strokeWidth={stroke} fill="none"
-            strokeDasharray={`${Math.max(len - 2, 0)} ${circ}`} strokeDashoffset={-offset} />
-        );
-        offset += len;
-        return el;
-      })}
+      {parts.map((p, i) => (
+        <Circle key={p.key} cx={size / 2} cy={size / 2} r={r} stroke={colour(p.key, i)} strokeWidth={stroke} fill="none"
+          strokeDasharray={`${Math.max(lengths[i] - 2, 0)} ${circ}`} strokeDashoffset={-offsets[i]} />
+      ))}
     </Svg>
   );
 }

@@ -1,6 +1,6 @@
 import { router, type Href } from 'expo-router';
 import { ArrowRight, CircleAlert, Inbox, RefreshCw } from 'lucide-react-native';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -11,6 +11,7 @@ import {
   View,
   type ScrollViewProps,
   type StyleProp,
+  type TextInputProps,
   type TextProps,
   type TextStyle,
   type ViewStyle,
@@ -175,12 +176,8 @@ export function NumField({
   const pretty = (v: number | null) =>
     v === null || v === undefined ? '' : v.toLocaleString('en-AU', { maximumFractionDigits: integer ? 0 : 2 });
   const [focused, setFocused] = useState(false);
+  // What's typed while editing; when not editing the field shows the value itself
   const [text, setText] = useState(raw(value));
-  useEffect(() => {
-    const parsed = text.trim() === '' ? null : Number(text.replace(/[,$\s]/g, ''));
-    if (parsed !== value) setText(raw(value));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value]);
   return (
     <View style={s.field}>
       <Text style={s.label}>{label}</Text>
@@ -217,13 +214,14 @@ export function TextField({
   onChange,
   placeholder,
   secure,
+  ...input
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   secure?: boolean;
-}) {
+} & Pick<TextInputProps, 'autoComplete' | 'textContentType' | 'keyboardType' | 'returnKeyType' | 'onSubmitEditing' | 'autoCapitalize' | 'editable'>) {
   return (
     <View style={s.field}>
       <Text style={s.label}>{label}</Text>
@@ -237,6 +235,7 @@ export function TextField({
         autoCorrect={false}
         secureTextEntry={secure}
         accessibilityLabel={label}
+        {...input}
       />
     </View>
   );

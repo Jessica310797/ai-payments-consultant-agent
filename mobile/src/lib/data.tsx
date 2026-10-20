@@ -5,6 +5,7 @@ import type { ActionStatus } from '@shared/lib/actions';
 import { derive, notificationsFor, withUploads, type Derived, type Notice } from '@shared/lib/derive';
 import type { PeriodKey } from '@shared/lib/periods';
 import type { Href } from 'expo-router';
+import { useAuth } from './auth';
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 export { notificationsFor, type Derived, type Notice };
@@ -25,6 +26,9 @@ interface Ctx {
   setPeriodKey: (k: PeriodKey) => void;
   demoState: DemoState;
   setDemoState: (s: DemoState) => void;
+  /** Show the fictional demo merchant instead of the signed-in merchant's own data. */
+  showDemo: boolean;
+  setShowDemo: (v: boolean) => void;
   retry: () => void;
   uploaded: Uploaded | null;
   setUploadedData: (u: Uploaded | null) => void;
@@ -49,15 +53,39 @@ async function readJson<T>(key: string, fallback: T): Promise<T> {
 }
 const writeJson = (key: string, v: unknown) => AsyncStorage.setItem(key, JSON.stringify(v)).catch(() => undefined);
 
+/** A signed-in merchant's own dataset: the general change log, plus whatever they've added on this phone. */
+function ownDataset(demo: Dataset, merchantName: string): Dataset {
+  return {
+    ...demo,
+    meta: { source: 'Your data on this phone', isDemo: false, lastUpdated: new Date().toISOString() },
+    merchant: { name: merchantName, surchargesToday: false, surchargeRatePct: 0 },
+    providers: [],
+    ledger: [],
+    invoices: [],
+    benchmarks: [],
+    // Demo-only items (a fictional provider's price change) are left out; regulatory items aren't assessed yet
+    changes: demo.changes
+      .filter((c) => c.category === 'regulation')
+      .map((c) => ({ ...c, applicability: 'not-assessed' as const, applicabilityReason: 'Not assessed for your business yet. Add a statement so PayNavigate can check which payment methods it covers.' })),
+  };
+}
+
+interface Stored {
+  uploaded: Uploaded | null;
+  invoices: Invoice[];
+}
+const EMPTY: Stored = { uploaded: null, invoices: [] };
+
 export function DataProvider({ children }: { children: ReactNode }) {
-  const [status, setStatus] = useState<Status>('loading');
-  const [error, setError] = useState<string | null>(null);
-  const [base, setBase] = useState<Dataset | null>(null);
+  const { profile } = useAuth();
+  const merchantId = profile?.merchant.id ?? null;
+  // The latest load result, tagged with what it was loaded for; anything else is still loading
+  const [loaded, setLoaded] = useState<{ key: string; data: Dataset | null; error: string | null } | null>(null);
   const [demoState, setDemoState] = useState<DemoState>('normal');
+  const [showDemo, setShowDemoState] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [periodKey, setPeriodKeyState] = useState<PeriodKey>('1M');
-  const [uploaded, setUploaded] = useState<Uploaded | null>(null);
-  const [extraInvoices, setExtraInvoices] = useState<Invoice[]>([]);
+  const [storedFor, setStoredFor] = useState<{ key: string | null; value: Stored }>({ key: null, value: EMPTY });
   const [actionStatus, setActionStatusState] = useState<Record<string, ActionStatus>>({});
   const [read, setRead] = useState<string[]>([]);
 
@@ -67,35 +95,53 @@ export function DataProvider({ children }: { children: ReactNode }) {
     readJson<string[]>(KEYS.read, []).then(setRead);
   }, []);
 
+  // Each merchant's own data is kept on the phone under their merchant id
+  const storeKey = merchantId != null ? `pn.merchant.${merchantId}` : null;
+  useEffect(() => {
+    if (storeKey) readJson<Stored>(storeKey, EMPTY).then((value) => setStoredFor({ key: storeKey, value }));
+    readJson<boolean>(`${storeKey ?? 'pn'}.showDemo`, false).then(setShowDemoState);
+  }, [storeKey]);
+  // Another merchant's data is never shown while this merchant's is being read
+  const stored = storedFor.key === storeKey ? storedFor.value : EMPTY;
+  // Updates build on the latest saved value, so two changes in a row (statement + its invoice) both stick
+  const updateStored = useCallback((change: (cur: Stored) => Stored) => {
+    setStoredFor((prev) => {
+      const next = change(prev.key === storeKey ? prev.value : EMPTY);
+      if (storeKey) writeJson(storeKey, next);
+      return { key: storeKey, value: next };
+    });
+  }, [storeKey]);
+
+  const loadKey = `${demoState}:${attempt}`;
   useEffect(() => {
     let live = true;
-    setStatus('loading');
-    setError(null);
     loadDataset(demoState)
-      .then((d) => {
-        if (live) {
-          setBase(d);
-          setStatus('ready');
-        }
-      })
-      .catch((e: Error) => {
-        if (live) {
-          setError(e.message);
-          setStatus('error');
-        }
-      });
+      .then((d) => live && setLoaded({ key: loadKey, data: d, error: null }))
+      .catch((e: Error) => live && setLoaded({ key: loadKey, data: null, error: e.message }));
     return () => {
       live = false;
     };
-  }, [demoState, attempt]);
+  }, [demoState, loadKey]);
+  const current = loaded?.key === loadKey ? loaded : null;
+  const status: Status = !current ? 'loading' : current.error ? 'error' : 'ready';
+  const error = current?.error ?? null;
+  const demoBase = current?.data ?? null;
 
-  const data = useMemo(() => (base ? withUploads(base, uploaded, extraInvoices) : null), [base, uploaded, extraInvoices]);
+  const data = useMemo(() => {
+    if (!demoBase) return null;
+    if (showDemo || !profile || demoState !== 'normal') return demoBase;
+    return withUploads(ownDataset(demoBase, profile.merchant.name), stored.uploaded, stored.invoices);
+  }, [demoBase, showDemo, profile, demoState, stored]);
   const derived = useMemo(() => (data ? derive(data, periodKey) : null), [data, periodKey]);
 
   const setPeriodKey = useCallback((k: PeriodKey) => {
     setPeriodKeyState(k);
     writeJson(KEYS.period, k);
   }, []);
+  const setShowDemo = useCallback((v: boolean) => {
+    setShowDemoState(v);
+    writeJson(`${storeKey ?? 'pn'}.showDemo`, v);
+  }, [storeKey]);
   const setActionStatus = useCallback((id: string, st: ActionStatus) => {
     setActionStatusState((cur) => {
       const next = { ...cur, [id]: st };
@@ -111,14 +157,15 @@ export function DataProvider({ children }: { children: ReactNode }) {
   }, [data, derived]);
 
   const value: Ctx = {
-    status, error, data, derived, periodKey, setPeriodKey, demoState, setDemoState,
+    status, error, data, derived, periodKey, setPeriodKey, demoState, setDemoState, showDemo, setShowDemo,
     retry: () => setAttempt((a) => a + 1),
-    uploaded,
+    uploaded: stored.uploaded,
     setUploadedData: (u) => {
-      setUploaded(u);
-      if (!u) setExtraInvoices([]);
+      // Adding data switches the dashboard to the merchant's own data
+      updateStored((cur) => (u ? { ...cur, uploaded: u } : EMPTY));
+      if (u) setShowDemo(false);
     },
-    addInvoice: (inv) => setExtraInvoices((cur) => [...cur.filter((i) => i.id !== inv.id), inv]),
+    addInvoice: (inv) => updateStored((cur) => ({ ...cur, invoices: [...cur.invoices.filter((i) => i.id !== inv.id), inv] })),
     actionStatus, setActionStatus, read, markNotificationsRead,
   };
   return <DataCtx.Provider value={value}>{children}</DataCtx.Provider>;

@@ -24,7 +24,7 @@ export default function Results() {
     if (!visit.draft) return;
     const name = visit.draft.merchant_name || 'Statement';
     const { records, invoice } = statementToLedger(visit.draft, `${name} statement`);
-    setUploadedData({ source: `Statement: ${name}${visit.draft.acquirer ? ` (${visit.draft.acquirer})` : ''}`, records, merchantName: visit.draft.merchant_name });
+    setUploadedData({ source: `Statement: ${name}${visit.draft.acquirer ? ` (${visit.draft.acquirer})` : ''}`, records });
     if (invoice) addInvoice(invoice);
     router.dismissTo('/');
   };
