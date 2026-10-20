@@ -6,7 +6,7 @@ import { Card, CardHeader, TextLink } from '../components/ui/Card';
 import { Provenance } from '../components/ui/Provenance';
 import { ScreenHeader } from '../components/ui/ScreenHeader';
 import { EmptyState } from '../components/ui/States';
-import { money } from '../lib/format';
+import { money } from '@shared/lib/format';
 import { useData } from '../state/DataContext';
 
 const KIND_HELP = {

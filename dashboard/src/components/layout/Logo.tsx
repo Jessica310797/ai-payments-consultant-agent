@@ -7,7 +7,7 @@ export function Logo() {
         <ChartColumn size={22} strokeWidth={2.5} />
       </span>
       <span className="leading-tight">
-        <span className="block text-[19px] font-semibold tracking-[-0.01em]">Paywise</span>
+        <span className="block text-[19px] font-semibold tracking-[-0.01em]">PayNavigate</span>
         <span className="block text-[13px] text-subtle">Payments Intelligence</span>
       </span>
     </div>

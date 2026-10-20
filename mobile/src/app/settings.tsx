@@ -1,7 +1,7 @@
 import Constants from 'expo-constants';
 import { useEffect, useState } from 'react';
-import { ScrollView, Text } from 'react-native';
-import { Button, Card, Note, TextField } from '../components/ui';
+import { ScrollView } from 'react-native';
+import { Button, Card, Note, TextField, Text } from '../components/ui';
 import { loadSettings, storeSettings } from '../lib/storage';
 import { C } from '../lib/theme';
 

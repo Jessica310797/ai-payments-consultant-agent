@@ -7,10 +7,10 @@ import { Provenance } from '../components/ui/Provenance';
 import { ScreenHeader } from '../components/ui/ScreenHeader';
 import { EmptyState } from '../components/ui/States';
 import { Table, Td } from '../components/ui/Table';
-import type { SegmentId } from '../data/types';
-import { count, money, pct } from '../lib/format';
-import { summarise } from '../lib/metrics';
-import { SEGMENTS } from '../lib/segments';
+import type { SegmentId } from '@shared/data/types';
+import { count, money, pct } from '@shared/lib/format';
+import { summarise } from '@shared/lib/metrics';
+import { SEGMENTS } from '@shared/lib/segments';
 import { useData } from '../state/DataContext';
 
 export default function Transactions() {

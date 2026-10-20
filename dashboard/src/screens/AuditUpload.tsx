@@ -5,9 +5,9 @@ import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Card, CardHeader } from '../components/ui/Card';
 import { ScreenHeader } from '../components/ui/ScreenHeader';
-import { CsvError, importTransactions, TEMPLATE_CSV, type CsvImport } from '../lib/csv';
-import { count, money, monthMid, rangeLabel } from '../lib/format';
-import { sortedMonths } from '../lib/periods';
+import { CsvError, importTransactions, TEMPLATE_CSV, type CsvImport } from '@shared/lib/csv';
+import { count, money, monthMid, rangeLabel } from '@shared/lib/format';
+import { sortedMonths } from '@shared/lib/periods';
 import { useData } from '../state/DataContext';
 
 const field = 'mt-1 block min-h-11 w-full rounded-xl border border-line bg-card px-3 text-[14px]';
@@ -16,13 +16,13 @@ function downloadTemplate() {
   const url = URL.createObjectURL(new Blob([TEMPLATE_CSV], { type: 'text/csv' }));
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'paywise-transactions-template.csv';
+  a.download = 'paynavigate-transactions-template.csv';
   a.click();
   URL.revokeObjectURL(url);
 }
 
 function TransactionsUpload() {
-  const { uploaded, useUploaded } = useData();
+  const { uploaded, setUploadedData } = useData();
   const [preview, setPreview] = useState<{ fileName: string; result: CsvImport } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -52,7 +52,7 @@ function TransactionsUpload() {
       {uploaded ? (
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-brand-soft p-3 text-[13px]">
           <span className="inline-flex items-center gap-2"><CircleCheck size={16} className="text-brand" aria-hidden /> Dashboard is using <strong>{uploaded.fileName}</strong></span>
-          <Button kind="ghost" className="!min-h-9" onClick={() => useUploaded(null)}>Switch back to demo data</Button>
+          <Button kind="ghost" className="!min-h-9" onClick={() => setUploadedData(null)}>Switch back to demo data</Button>
         </div>
       ) : null}
       <label htmlFor={inputId} className="block text-[13px] font-medium">Choose a CSV file</label>
@@ -76,7 +76,7 @@ function TransactionsUpload() {
           {!preview.result.hasFees ? <p className="mt-2 text-amber">No fee columns found: costs will show as $0 and the audit can't check fees.</p> : null}
           <p className="mt-2 text-subtle">Contracted rates aren't in a transactions file, so fee discrepancies and pricing changes can't be separated until a fee schedule is added.</p>
           <div className="mt-3 flex gap-2">
-            <Button onClick={() => { useUploaded({ fileName: preview.fileName, records: preview.result.records }); setPreview(null); }}>Use in dashboard</Button>
+            <Button onClick={() => { setUploadedData({ fileName: preview.fileName, records: preview.result.records }); setPreview(null); }}>Use in dashboard</Button>
             <Button kind="secondary" onClick={() => setPreview(null)}>Cancel</Button>
           </div>
         </div>

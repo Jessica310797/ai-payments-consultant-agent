@@ -5,7 +5,7 @@ import { AppliesBadge, STATUS, StatusBadge } from '../components/dashboard/Chang
 import { Card, CardHeader, TextLink } from '../components/ui/Card';
 import { ScreenHeader } from '../components/ui/ScreenHeader';
 import { EmptyState } from '../components/ui/States';
-import { dateLong, money } from '../lib/format';
+import { dateLong, money } from '@shared/lib/format';
 import { useData } from '../state/DataContext';
 
 export default function ChangeDetail() {

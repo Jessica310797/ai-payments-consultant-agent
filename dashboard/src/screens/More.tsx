@@ -3,8 +3,8 @@ import { Link } from 'react-router-dom';
 import { Button } from '../components/ui/Button';
 import { Card, CardHeader } from '../components/ui/Card';
 import { ScreenHeader } from '../components/ui/ScreenHeader';
-import type { DemoState } from '../data/source';
-import { dateTime } from '../lib/format';
+import type { DemoState } from '@shared/data/source';
+import { dateTime } from '@shared/lib/format';
 import { useData } from '../state/DataContext';
 
 const LINKS = [
@@ -16,7 +16,7 @@ const LINKS = [
 ];
 
 export default function More() {
-  const { data, uploaded, useUploaded, demoState, setDemoState } = useData();
+  const { data, uploaded, setUploadedData, demoState, setDemoState } = useData();
   return (
     <>
       <ScreenHeader title="More" back={false} />
@@ -42,7 +42,7 @@ export default function More() {
               <dt className="text-subtle">Updated</dt><dd>{dateTime(data.meta.lastUpdated)}</dd>
             </dl>
           ) : <p className="text-[13px] text-subtle">Not loaded.</p>}
-          {uploaded ? <Button kind="secondary" className="mt-3" onClick={() => useUploaded(null)}>Switch back to demo data</Button> : null}
+          {uploaded ? <Button kind="secondary" className="mt-3" onClick={() => setUploadedData(null)}>Switch back to demo data</Button> : null}
         </Card>
         <Card labelledBy="how">
           <CardHeader id="how" title="How the numbers are worked out" />
@@ -65,7 +65,7 @@ export default function More() {
             ))}
           </div>
         </Card>
-        <p className="px-1 text-[12px] text-subtle">Paywise · demo build. All figures shown are generated demo data for a fictional merchant.</p>
+        <p className="px-1 text-[12px] text-subtle">PayNavigate · demo build. All figures shown are generated demo data for a fictional merchant.</p>
       </div>
     </>
   );

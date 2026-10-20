@@ -7,8 +7,8 @@ import { Card } from '../components/ui/Card';
 import { PeriodSelector } from '../components/ui/PeriodSelector';
 import { Provenance } from '../components/ui/Provenance';
 import { ScreenHeader } from '../components/ui/ScreenHeader';
-import type { Finding } from '../lib/audit';
-import { money } from '../lib/format';
+import type { Finding } from '@shared/lib/audit';
+import { money } from '@shared/lib/format';
 import { useData } from '../state/DataContext';
 
 function Group({ title, help, items }: { title: string; help: string; items: Finding[] }) {

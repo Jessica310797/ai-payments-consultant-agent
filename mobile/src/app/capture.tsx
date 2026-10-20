@@ -1,10 +1,11 @@
 import * as DocumentPicker from 'expo-document-picker';
 import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
+import { Camera, FileText, Images } from 'lucide-react-native';
 import { useState } from 'react';
-import { Image, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Button, Card, Note } from '../components/ui';
+import { Button, Card, Note, Text } from '../components/ui';
 import { ApiError, readStatement } from '../lib/api';
 import { useVisit } from '../lib/store';
 import { C } from '../lib/theme';
@@ -36,7 +37,7 @@ export default function Capture() {
   const takePhoto = async () => {
     const perm = await ImagePicker.requestCameraPermissionsAsync();
     if (!perm.granted) {
-      setError('Camera access is off - turn it on for Payments Consultant in your phone settings, or choose photos instead.');
+      setError('Camera access is off - turn it on for PayNavigate in your phone settings, or choose photos instead.');
       return;
     }
     const res = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: PHOTO_QUALITY });
@@ -83,9 +84,9 @@ export default function Capture() {
           Photograph each page of the merchant's latest card statement or invoice, or choose the PDF they were emailed.
         </Text>
         <View style={{ gap: 10 }}>
-          {Platform.OS !== 'web' ? <Button label="Take a photo" icon="📷" onPress={takePhoto} disabled={busy} /> : null}
-          <Button label="Choose photos" icon="🖼" kind="secondary" onPress={choosePhotos} disabled={busy} />
-          <Button label="Choose a PDF" icon="📄" kind="secondary" onPress={choosePdf} disabled={busy} />
+          {Platform.OS !== 'web' ? <Button label="Take a photo" icon={<Camera size={18} color="#FFFFFF" />} onPress={takePhoto} disabled={busy} /> : null}
+          <Button label="Choose photos" icon={<Images size={18} color={C.ink} />} kind="secondary" onPress={choosePhotos} disabled={busy} />
+          <Button label="Choose a PDF" icon={<FileText size={18} color={C.ink} />} kind="secondary" onPress={choosePdf} disabled={busy} />
         </View>
 
         {pages.length > 0 ? (
@@ -157,7 +158,7 @@ export default function Capture() {
 const st = StyleSheet.create({
   lead: { fontSize: 15, color: C.ink, lineHeight: 21 },
   h: { fontSize: 14, fontWeight: '700', color: C.ink, marginTop: 6 },
-  pdf: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#F2EEE6', borderRadius: 10, padding: 12 },
+  pdf: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: C.field, borderRadius: 10, padding: 12 },
   remove: { color: C.bad, fontWeight: '700' },
   thumbs: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   thumbWrap: { width: 92, height: 120, borderRadius: 10, overflow: 'hidden', backgroundColor: C.line },
@@ -182,7 +183,7 @@ const st = StyleSheet.create({
     width: 26,
     height: 26,
     borderRadius: 13,
-    backgroundColor: 'rgba(29,43,41,0.75)',
+    backgroundColor: 'rgba(32,44,41,0.75)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -200,5 +201,5 @@ const st = StyleSheet.create({
   boxOn: { backgroundColor: C.teal },
   tick: { color: '#FFFFFF', fontWeight: '800' },
   consentText: { flex: 1, fontSize: 15, color: C.ink, lineHeight: 21 },
-  error: { marginTop: 14, backgroundColor: '#FBE9E2', borderRadius: 12, padding: 12 },
+  error: { marginTop: 14, backgroundColor: C.dangerSoft, borderRadius: 12, padding: 12 },
 });

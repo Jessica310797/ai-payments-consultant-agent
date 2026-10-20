@@ -1,6 +1,6 @@
 import { Area, AreaChart, CartesianGrid, ReferenceArea, ResponsiveContainer, Tooltip, XAxis, YAxis, type TooltipContentProps } from 'recharts';
-import { money, monthLong, monthShort, pct } from '../../lib/format';
-import type { MonthPoint } from '../../lib/metrics';
+import { money, monthLong, monthShort, pct } from '@shared/lib/format';
+import type { MonthPoint } from '@shared/lib/metrics';
 
 const BRAND = '#26734D';
 

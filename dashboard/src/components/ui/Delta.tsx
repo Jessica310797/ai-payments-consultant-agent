@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp } from 'lucide-react';
-import type { Change } from '../../lib/metrics';
+import type { Change } from '@shared/lib/metrics';
 
 /** Change vs the comparison period. `upIsGood` sets the colour: more sales is good, more cost is bad. */
 export function Delta({ change, upIsGood, compareLabel }: { change: Change | null; upIsGood: boolean; compareLabel: string }) {

@@ -1,24 +1,14 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { loadDataset, type DemoState } from '../data/source';
-import type { Dataset, Invoice, LedgerRecord } from '../data/types';
-import { recommendActions, type ActionStatus, type NextAction } from '../lib/actions';
-import { runAudit, type Finding } from '../lib/audit';
-import { costDrivers, monthlySeries, summarise, varianceSplit, type Driver, type MonthPoint, type Summary, type Variance } from '../lib/metrics';
-import { makePeriod, sortedMonths, type Period, type PeriodKey } from '../lib/periods';
+import { loadDataset, type DemoState } from '@shared/data/source';
+import type { Dataset, Invoice, LedgerRecord } from '@shared/data/types';
+import type { ActionStatus } from '@shared/lib/actions';
+import { derive, notificationsFor, withUploads, type Derived, type Notice } from '@shared/lib/derive';
+import type { PeriodKey } from '@shared/lib/periods';
+
+export { notificationsFor, type Derived, type Notice };
 
 type Status = 'loading' | 'error' | 'ready';
 
-export interface Derived {
-  period: Period;
-  now: Summary;
-  before: Summary | null;
-  series: MonthPoint[];
-  drivers: Driver[];
-  variance: Variance | null;
-  findings: Finding[];
-  actions: NextAction[];
-  empty: boolean;
-}
 
 interface Ctx {
   status: Status;
@@ -31,7 +21,7 @@ interface Ctx {
   setDemoState: (s: DemoState) => void;
   retry: () => void;
   uploaded: { fileName: string; records: LedgerRecord[] } | null;
-  useUploaded: (u: { fileName: string; records: LedgerRecord[] } | null) => void;
+  setUploadedData: (u: { fileName: string; records: LedgerRecord[] } | null) => void;
   addInvoice: (inv: Invoice) => void;
   actionStatus: Record<string, ActionStatus>;
   setActionStatus: (id: string, s: ActionStatus) => void;
@@ -87,34 +77,12 @@ export function DataProvider({ children }: { children: ReactNode }) {
     };
   }, [demoState, attempt]);
 
-  const data = useMemo<Dataset | null>(() => {
-    if (!base) return null;
-    if (!uploaded) return { ...base, invoices: [...base.invoices, ...extraInvoices] };
-    return {
-      ...base,
-      meta: { source: `Uploaded file: ${uploaded.fileName}`, isDemo: false, lastUpdated: new Date().toISOString() },
-      ledger: uploaded.records,
-      invoices: extraInvoices,
-      providers: sortedMonths(uploaded.records.map((r) => r.provider)).map((p) => ({ id: p, name: p, role: 'From uploaded file' })),
-      benchmarks: [],
-    };
-  }, [base, uploaded, extraInvoices]);
+  const data = useMemo<Dataset | null>(
+    () => (base ? withUploads(base, uploaded ? { source: `Uploaded file: ${uploaded.fileName}`, records: uploaded.records } : null, extraInvoices) : null),
+    [base, uploaded, extraInvoices],
+  );
 
-  const derived = useMemo<Derived | null>(() => {
-    if (!data) return null;
-    const period = makePeriod(periodKey, data.ledger.map((r) => r.month));
-    const now = summarise(data.ledger, period.current);
-    const before = period.comparison.length ? summarise(data.ledger, period.comparison) : null;
-    const variance = varianceSplit(data.ledger, period.current, period.comparison);
-    const findings = runAudit(data, period.current, period.label);
-    return {
-      period, now, before, variance, findings,
-      series: monthlySeries(data.ledger, period.chart),
-      drivers: costDrivers(now),
-      actions: recommendActions(data, now, before, variance, findings, period.label),
-      empty: data.ledger.length === 0,
-    };
-  }, [data, periodKey]);
+  const derived = useMemo<Derived | null>(() => (data ? derive(data, periodKey) : null), [data, periodKey]);
 
   const setPeriodKey = useCallback((k: PeriodKey) => {
     setPeriodKeyState(k);
@@ -136,7 +104,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const value: Ctx = {
     status, error, data, derived, periodKey, setPeriodKey, demoState, setDemoState,
     retry: () => setAttempt((a) => a + 1),
-    uploaded, useUploaded: setUploaded,
+    uploaded, setUploadedData: setUploaded,
     addInvoice: (inv) => setExtraInvoices((cur) => [...cur.filter((i) => i.id !== inv.id), inv]),
     actionStatus, setActionStatus, dismissed, readNotifications,
   };
@@ -149,21 +117,7 @@ export function useData() {
   return v;
 }
 
-export interface Notice {
-  id: string;
-  title: string;
-  body: string;
-  link: string;
-  tone: 'warning' | 'info';
-}
-
-/** Alerts derived from the data: confirmed audit findings, unverified changes, and cost increases. */
-export function notificationsFor(d: Dataset, x: Derived): Notice[] {
-  const out: Notice[] = [];
-  for (const f of x.findings.filter((f) => f.kind === 'confirmed')) out.push({ id: `finding-${f.id}`, title: f.title, body: f.headline, link: `/audit/${f.id}`, tone: 'warning' });
-  if (x.before && x.now.cost > x.before.cost * 1.05) {
-    out.push({ id: `costs-${x.period.label}`, title: 'Payment costs increased', body: `Costs rose ${(((x.now.cost - x.before.cost) / x.before.cost) * 100).toFixed(1)}% in ${x.period.label}.`, link: '/costs', tone: 'warning' });
-  }
-  for (const c of d.changes.filter((c) => c.status === 'unverified')) out.push({ id: `change-${c.id}`, title: c.title, body: 'Needs confirming against the official source.', link: `/october/${c.id}`, tone: 'info' });
-  return out;
+/** Where a notification leads in this app. */
+export function noticePath(n: Notice): string {
+  return n.target.screen === 'finding' ? `/audit/${n.target.id}` : n.target.screen === 'change' ? `/october/${n.target.id}` : '/costs';
 }

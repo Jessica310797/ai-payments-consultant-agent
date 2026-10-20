@@ -11,7 +11,8 @@
     "noEmit": true,
     "skipLibCheck": true,
     "isolatedModules": true,
-    "types": ["vite/client"]
+    "types": ["vite/client", "node"],
+    "paths": { "@shared/*": ["./../shared/*"] }
   },
-  "include": ["src", "test", "vite.config.ts"]
+  "include": ["src", "vite.config.ts", "../shared/lib", "../shared/data"]
 }

@@ -1,10 +1,12 @@
+import { statementToLedger } from '@shared/lib/statement';
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Switch, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Donut, Legend, RoutingBars } from '../components/charts';
-import { Button, Card, Checks, Highlight, Note, NumField, Row } from '../components/ui';
+import { Button, Card, Checks, Highlight, Note, NumField, Row, Text } from '../components/ui';
 import { fmtMoney, fmtNumber, fmtPct, fmtPeriod } from '../lib/format';
+import { useData } from '../lib/data';
 import { useVisit } from '../lib/store';
 import { C } from '../lib/theme';
 import type { Stage } from '../lib/types';
@@ -14,14 +16,25 @@ export default function Results() {
   const { visit, update } = useVisit();
   const [surcharging, setSurcharging] = useState(true);
   const [rate, setRate] = useState<number | null>(1);
+  const { setUploadedData, addInvoice } = useData();
   const r = visit.report;
+
+  // Puts the confirmed statement figures into the dashboard (Home, Audit, Costs) as this merchant's data
+  const addToDashboard = () => {
+    if (!visit.draft) return;
+    const name = visit.draft.merchant_name || 'Statement';
+    const { records, invoice } = statementToLedger(visit.draft, `${name} statement`);
+    setUploadedData({ source: `Statement: ${name}${visit.draft.acquirer ? ` (${visit.draft.acquirer})` : ''}`, records, merchantName: visit.draft.merchant_name });
+    if (invoice) addInvoice(invoice);
+    router.dismissTo('/');
+  };
 
   if (!r) {
     return (
       <View style={{ padding: 16 }}>
         <Card>
           <Note>No results yet.</Note>
-          <Button label="Back to start" onPress={() => router.replace('/')} />
+          <Button label="Back to Home" onPress={() => router.replace('/')} />
         </Card>
       </View>
     );
@@ -154,7 +167,8 @@ export default function Results() {
             router.push('/check');
           }}
         />
-        <Button label="Done" onPress={() => router.dismissTo('/')} />
+        <Button label="Add to dashboard" onPress={addToDashboard} />
+        <Button kind="ghost" label="Done" onPress={() => router.dismissTo('/')} />
       </View>
     </ScrollView>
   );
@@ -215,7 +229,7 @@ const st = StyleSheet.create({
   merchant: { fontSize: 24, fontWeight: '800', color: C.ink, textAlign: 'center' },
   sub: { fontSize: 13, color: C.muted, marginTop: 4, textAlign: 'center' },
   tiles: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  tile: { flexBasis: '47%', flexGrow: 1, backgroundColor: '#F6EFE2', borderRadius: 14, padding: 12 },
+  tile: { flexBasis: '47%', flexGrow: 1, backgroundColor: C.field, borderRadius: 14, padding: 12 },
   tileLabel: { fontSize: 12, fontWeight: '700', color: C.muted, letterSpacing: 0.8, textTransform: 'uppercase' },
   tileValue: { fontSize: 26, fontWeight: '800', color: C.orange, marginTop: 2 },
   tileUnit: { fontSize: 12, color: C.ink },
@@ -223,7 +237,7 @@ const st = StyleSheet.create({
   donuts: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-around', gap: 12 },
   table: { borderTopWidth: 1, borderColor: C.line },
   tr: { flexDirection: 'row', borderBottomWidth: 1, borderColor: C.line, paddingVertical: 8, alignItems: 'center' },
-  trTotal: { backgroundColor: '#F6EFE2' },
+  trTotal: { backgroundColor: C.field },
   th: { flex: 1, fontSize: 12, fontWeight: '700', color: C.muted, textAlign: 'right' },
   td: { flex: 1, fontSize: 13, color: C.ink, textAlign: 'right' },
   switchRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },

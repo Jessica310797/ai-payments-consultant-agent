@@ -1,6 +1,6 @@
 import { Database } from 'lucide-react';
 import { useData } from '../../state/DataContext';
-import { dateTime } from '../../lib/format';
+import { dateTime } from '@shared/lib/format';
 
 /** Where the numbers come from, which period they cover and when they were last updated. */
 export function Provenance({ className = '' }: { className?: string }) {

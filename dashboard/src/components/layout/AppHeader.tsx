@@ -9,7 +9,7 @@ export function AppHeader() {
   const icon = 'relative grid h-11 w-11 place-items-center rounded-xl text-ink hover:bg-[#E9ECE7]';
   return (
     <div className="flex items-center justify-between">
-      <Link to="/" aria-label="Paywise home" className="rounded-xl">
+      <Link to="/" aria-label="PayNavigate home" className="rounded-xl">
         <Logo />
       </Link>
       <nav aria-label="Tools" className="flex items-center gap-1">

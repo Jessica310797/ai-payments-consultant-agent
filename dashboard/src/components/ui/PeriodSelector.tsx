@@ -1,5 +1,5 @@
 import { useRef, type KeyboardEvent } from 'react';
-import { PERIOD_OPTIONS } from '../../lib/periods';
+import { PERIOD_OPTIONS } from '@shared/lib/periods';
 import { useData } from '../../state/DataContext';
 
 /** Segmented radio group: Tab focuses the selected option, arrow keys move between options. */

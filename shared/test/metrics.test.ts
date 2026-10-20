@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { ledger } from '../src/data/fixtures/ledger';
-import type { LedgerRecord } from '../src/data/types';
-import { importTransactions } from '../src/lib/csv';
-import { costDrivers, summarise, varianceSplit } from '../src/lib/metrics';
-import { makePeriod } from '../src/lib/periods';
+import { ledger } from '../data/fixtures/ledger';
+import type { LedgerRecord } from '../data/types';
+import { importTransactions } from '../lib/csv';
+import { costDrivers, summarise, varianceSplit } from '../lib/metrics';
+import { makePeriod } from '../lib/periods';
 
 const rec = (month: string, segment: LedgerRecord['segment'], value: number, rate: number, expectedRate = rate): LedgerRecord => ({
   month, provider: 'A', segment, transactions: Math.round(value / 50), value,

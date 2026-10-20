@@ -1,5 +1,5 @@
 import { CircleCheck, CircleHelp, Route, TriangleAlert } from 'lucide-react';
-import type { Finding } from '../../lib/audit';
+import type { Finding } from '@shared/lib/audit';
 import { Badge, type Tone } from '../ui/Badge';
 
 export const KIND: Record<Finding['kind'], { label: string; tone: Tone }> = {

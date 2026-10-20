@@ -6,9 +6,9 @@ import { ScreenHeader } from '../components/ui/ScreenHeader';
 import { EmptyState } from '../components/ui/States';
 import { Table, Td } from '../components/ui/Table';
 import { CostTrendChart } from '../components/dashboard/CostTrendChart';
-import { count, money, monthMid, pct } from '../lib/format';
-import { summarise } from '../lib/metrics';
-import { COMPONENTS } from '../lib/segments';
+import { count, money, monthMid, pct } from '@shared/lib/format';
+import { summarise } from '@shared/lib/metrics';
+import { COMPONENTS } from '@shared/lib/segments';
 import { useData } from '../state/DataContext';
 
 const signed = (v: number) => `${v >= 0 ? '+' : '−'}${money(Math.abs(v), { exact: true })}`;

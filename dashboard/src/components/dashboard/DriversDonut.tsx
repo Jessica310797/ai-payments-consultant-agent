@@ -1,6 +1,6 @@
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
-import { money } from '../../lib/format';
-import type { Driver } from '../../lib/metrics';
+import { money } from '@shared/lib/format';
+import type { Driver } from '@shared/lib/metrics';
 
 // Sequential greens, darkest for the largest driver
 export const DRIVER_COLOURS = ['#1D5C3D', '#2F7D55', '#5E9C7A', '#93BBA3', '#C7D9CC'];

@@ -1,0 +1,16 @@
+{
+  "name": "paynavigate-shared",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Calculations, data types and demo fixtures shared by the PayNavigate web dashboard and mobile app. No runtime dependencies.",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "fixtures": "node scripts/generate-fixtures.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}

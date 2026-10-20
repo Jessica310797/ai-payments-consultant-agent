@@ -1,5 +1,5 @@
-import { count, money, pct } from '../../lib/format';
-import { pctChange, ppChange, type Change } from '../../lib/metrics';
+import { count, money, pct } from '@shared/lib/format';
+import { pctChange, ppChange, type Change } from '@shared/lib/metrics';
 import { useData } from '../../state/DataContext';
 import { Card, CardHeader } from '../ui/Card';
 import { Delta } from '../ui/Delta';

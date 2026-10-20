@@ -5,7 +5,7 @@ import { Badge, cap, confidenceTone, priorityTone } from '../components/ui/Badge
 import { Card, CardHeader, TextLink } from '../components/ui/Card';
 import { ScreenHeader } from '../components/ui/ScreenHeader';
 import { EmptyState } from '../components/ui/States';
-import type { ActionStatus } from '../lib/actions';
+import type { ActionStatus } from '@shared/lib/actions';
 import { useData } from '../state/DataContext';
 
 export function ActionsList() {

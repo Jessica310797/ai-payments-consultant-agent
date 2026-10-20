@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import { DataGate } from '../components/layout/DataGate';
 import { ScreenHeader } from '../components/ui/ScreenHeader';
 import { EmptyState } from '../components/ui/States';
-import { notificationsFor, useData } from '../state/DataContext';
+import { noticePath, notificationsFor, useData } from '../state/DataContext';
 
 export default function Notifications() {
   const { data, derived, dismissed, readNotifications } = useData();
@@ -25,7 +25,7 @@ export default function Notifications() {
           <ul className="space-y-2">
             {items.map((n) => (
               <li key={n.id}>
-                <Link to={n.link} className="flex gap-3 rounded-xl border border-line bg-card p-4 hover:border-[#CBD3C9]">
+                <Link to={noticePath(n)} className="flex gap-3 rounded-xl border border-line bg-card p-4 hover:border-[#CBD3C9]">
                   <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-full ${n.tone === 'warning' ? 'bg-danger-soft text-danger' : 'bg-info-soft text-info'}`}>
                     {n.tone === 'warning' ? <TriangleAlert size={17} aria-hidden /> : <Bell size={17} aria-hidden />}
                   </span>

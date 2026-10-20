@@ -1,6 +1,6 @@
 import { ChevronRight, Sparkles } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import type { NextAction } from '../../lib/actions';
+import type { NextAction } from '@shared/lib/actions';
 import { useData } from '../../state/DataContext';
 import { Badge, cap, priorityTone } from '../ui/Badge';
 import { TextLink } from '../ui/Card';

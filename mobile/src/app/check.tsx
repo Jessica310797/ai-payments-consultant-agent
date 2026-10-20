@@ -1,8 +1,9 @@
 import { router } from 'expo-router';
+import { Plus } from 'lucide-react-native';
 import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Button, Card, Checks, Chips, Note, NumField, TextField, s as ui } from '../components/ui';
+import { Button, Card, Checks, Chips, Note, NumField, TextField, s as ui, Text } from '../components/ui';
 import { ApiError, buildReport, checkDraft } from '../lib/api';
 import { newId, saveCheck } from '../lib/storage';
 import { useVisit } from '../lib/store';
@@ -184,7 +185,7 @@ export default function CheckFigures() {
         })}
         <Button
           label="Add a line"
-          icon="＋"
+          icon={<Plus size={18} color={C.ink} />}
           kind="secondary"
           onPress={() => {
             setOpen(draft.lines.length);
@@ -218,5 +219,5 @@ const st = StyleSheet.create({
   line: { borderLeftWidth: 5, paddingLeft: 12, gap: 10, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.line },
   lineHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 12 },
   lineSub: { fontSize: 13, color: C.muted, marginTop: 2 },
-  error: { marginTop: 14, backgroundColor: '#FBE9E2', borderRadius: 12, padding: 12 },
+  error: { marginTop: 14, backgroundColor: C.dangerSoft, borderRadius: 12, padding: 12 },
 });

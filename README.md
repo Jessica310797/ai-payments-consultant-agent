@@ -1,6 +1,7 @@
 # ai-payments-consultant-agent
 
-> **Paywise dashboard:** a mobile-first web app version lives in [`dashboard/`](dashboard/) (React + Vite + Tailwind).
+> **PayNavigate:** the phone app is in [`mobile/`](mobile/) (Expo) and the web dashboard in [`dashboard/`](dashboard/)
+> (React + Vite + Tailwind). Both use the calculations and demo data in [`shared/`](shared/).
 
 ## Getting started
 

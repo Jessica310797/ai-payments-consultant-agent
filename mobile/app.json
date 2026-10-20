@@ -1,24 +1,24 @@
 {
   "expo": {
-    "name": "Payments Consultant",
-    "slug": "payments-consultant",
+    "name": "PayNavigate",
+    "slug": "paynavigate",
     "version": "1.0.0",
-    "scheme": "paymentsconsultant",
+    "scheme": "paynavigate",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "backgroundColor": "#FBF4E6",
+    "backgroundColor": "#F4F5F3",
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.jessicaculnane.paymentsconsultant",
+      "bundleIdentifier": "com.jessicaculnane.paynavigate",
       "config": {
         "usesNonExemptEncryption": false
       }
     },
     "android": {
-      "package": "com.jessicaculnane.paymentsconsultant",
+      "package": "com.jessicaculnane.paynavigate",
       "adaptiveIcon": {
-        "backgroundColor": "#1D4B45",
+        "backgroundColor": "#1D5C3D",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -34,12 +34,21 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Choose photos of a merchant's card statement so its fees can be read.",
-          "cameraPermission": "Photograph a merchant's card statement so its fees can be read.",
+          "photosPermission": "Choose photos of a merchant's card statement so PayNavigate can read its fees.",
+          "cameraPermission": "Photograph a merchant's card statement so PayNavigate can read its fees.",
           "microphonePermission": false
         }
       ],
-      "expo-document-picker"
+      "expo-document-picker",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 180,
+          "backgroundColor": "#F4F5F3"
+        }
+      ],
+      "expo-font"
     ],
     "experiments": {
       "typedRoutes": false

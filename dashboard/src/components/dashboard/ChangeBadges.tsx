@@ -1,4 +1,4 @@
-import type { Applicability, ChangeStatus } from '../../data/types';
+import type { Applicability, ChangeStatus } from '@shared/data/types';
 import { Badge, type Tone } from '../ui/Badge';
 
 export const STATUS: Record<ChangeStatus, { label: string; tone: Tone; help: string }> = {

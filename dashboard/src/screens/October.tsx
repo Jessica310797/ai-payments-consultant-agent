@@ -6,7 +6,7 @@ import { Card } from '../components/ui/Card';
 import { Provenance } from '../components/ui/Provenance';
 import { ScreenHeader } from '../components/ui/ScreenHeader';
 import { EmptyState } from '../components/ui/States';
-import { dateLong, pct } from '../lib/format';
+import { dateLong, pct } from '@shared/lib/format';
 import { useData } from '../state/DataContext';
 
 const CATEGORY = { regulation: 'Regulation', 'provider-pricing': 'Provider pricing', scheme: 'Scheme fees' };

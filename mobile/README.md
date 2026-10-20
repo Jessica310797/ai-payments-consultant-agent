@@ -1,31 +1,41 @@
-# Payments Consultant — mobile app
+# PayNavigate — mobile app
 
-An Expo (React Native) app for in-store visits:
+An Expo (React Native) payments intelligence app for Australian merchants. It has the same design and numbers as the
+web dashboard in [`../dashboard`](../dashboard). Both use the calculations and demo data in [`../shared`](../shared).
 
-1. **New merchant check** → photograph each page of the merchant's card statement (or pick the PDF they were emailed),
-   and tick that the merchant agreed to share it.
-2. **Check the figures** → Claude's reading of the statement, with checks that flag likely misreads. Fix anything
-   against the paper statement, **Re-check**, then **Confirm figures**.
-3. **Results** → key metrics, payment mix, debit routing today, the 1 October reform impact (Today / 1 Oct /
-   + routing) and the surcharge impact (adjustable surcharge %).
-4. Completed checks are saved **on the phone only** and listed on the home screen (long-press to delete).
+**Tabs:** Home (dashboard), Transactions, Audit, October, More.
 
-The app never holds the Anthropic API key. It sends the statement to the API in [`../api`](../api), which asks Claude
-to read it and runs the same calculations as the website ([`../payments_core.py`](../payments_core.py)).
+- **Home** - cost summary with a Month / 3 months / 6 months switch and the cost trend, October changes, top cost
+  drivers, audit analysis and ranked next actions. Every card opens a detail screen.
+- **Audit → Upload data** - three ways to add a merchant's data:
+  1. **Photograph a statement** (or choose its PDF) and tick that the merchant agreed to share it. Claude reads it on the
+     server, you check and correct the figures, then see the **1 October impact** (Today / 1 Oct / + routing and the
+     surcharge impact). **Add to dashboard** puts the statement's figures into Home, Costs and Audit. Checked
+     statements are saved **on the phone only** (More → Statement checks).
+  2. A **transactions CSV**, read on the phone.
+  3. A **fee invoice** and its total, to reconcile against transaction fees.
+- Until real data is added the app shows **demo data** for a fictional merchant, labelled as such on every screen.
+
+The app never holds the Anthropic API key. It sends statements to the API in [`../api`](../api), which asks Claude to
+read them and runs the same 1 October calculations as the website ([`../payments_core.py`](../payments_core.py)).
 
 ## Code
 
 | Path | What it is |
 | --- | --- |
-| `src/app/index.tsx` | Home: new check, recent checks, settings |
-| `src/app/capture.tsx` | Camera / photos / PDF, consent, upload |
-| `src/app/check.tsx` | Check and edit the figures |
-| `src/app/results.tsx` | Results |
-| `src/app/settings.tsx` | Server address and access key override (for testing) |
-| `src/lib/api.ts` | Calls to the API |
-| `src/lib/storage.ts` | Saved checks and settings on the phone |
+| `src/app/(tabs)/` | The five tabs |
+| `src/app/costs.tsx`, `drivers.tsx`, `finding/[id].tsx`, `change/[id].tsx`, `actions.tsx`, `action/[id].tsx` | Detail screens |
+| `src/app/upload.tsx`, `capture.tsx`, `check.tsx`, `results.tsx`, `statements.tsx` | Adding data, and the statement flow |
+| `src/app/search.tsx`, `notifications.tsx`, `settings.tsx` | Header icons and settings |
+| `src/components/` | UI kit (`ui.tsx`), dashboard sections, charts |
+| `src/lib/data.tsx` | App data: loads the dataset, selected period, uploads, action status |
+| `src/lib/api.ts`, `storage.ts`, `store.tsx` | Statement API calls, saved checks, the statement in progress |
+| `../shared/` (imported as `@shared/...`) | Calculations, types, demo data and their tests |
+
+`metro.config.js` adds `../shared` to Metro's watch folders, and `tsconfig.json` maps `@shared/*` to it.
 
 Run `npm install`, then `npm run typecheck`. `npx expo start` runs it in Expo Go on your phone for development.
+Calculation tests: `cd ../shared && npm install && npm test`.
 
 ## Getting it onto phones and into the stores
 
@@ -53,6 +63,7 @@ expo.dev in step 4.
 1. On the repository's GitHub page: **Code → Codespaces → Create codespace on main**, then in its terminal:
    `cd mobile && npm ci`
 2. `npx eas-cli@latest login` - the same Expo account as Pakka.
+   (The app is now called PayNavigate: slug `paynavigate`, bundle ID / package `com.jessicaculnane.paynavigate`.)
 3. `npx eas-cli@latest init` - creates the Expo project and adds its ID to `app.json`. Commit and push that change
    (Source Control panel → Commit → Sync).
 4. On expo.dev → this project → **Environment variables** → add `EXPO_PUBLIC_APP_ACCESS_KEY` with the same value as

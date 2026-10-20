@@ -1,7 +1,7 @@
 import { CalendarDays, ChevronRight, CreditCard, FileText, TrendingUp } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
-import { dateLong } from '../../lib/format';
+import { dateLong } from '@shared/lib/format';
 import { useData } from '../../state/DataContext';
 import { Badge, type Tone } from '../ui/Badge';
 import { TextLink } from '../ui/Card';
